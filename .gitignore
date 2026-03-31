@@ -1,0 +1,59 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# OS
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# UI / Node
+ui/node_modules/
+ui/dist/
+ui/dist-ssr/
+ui/.vite/
+ui/tsconfig.app.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Local env
+.env
+.env.*
+*.local
+
+# Generated / temp research artifacts
+research/**/__pycache__/
+research/**/.ipynb_checkpoints/
+research/**/reports/
+research/**/outputs/
+research/**/models/
+research/**/datasets/
+research/**/figures/
+research/**/exports_listening/
+research/**/robustness_out/
+
+# Local script/runtime data
+scripts/data/
+
+# Optional large local folders
+data/
+datasets/
