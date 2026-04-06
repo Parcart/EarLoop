@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from .types import DomainState, EngineAudioConfig, EngineConfig, PerceptualParams, PipelineConfig, SavedProfile
 
@@ -14,6 +16,20 @@ def resolve_engine_state_path() -> Path:
         return Path(configured).expanduser().resolve()
     repo_root = Path(__file__).resolve().parents[3]
     return repo_root / "data" / "engine" / "domain-state.json"
+
+
+def resolve_engine_user_meta_path() -> Path:
+    configured = os.environ.get("EARLOOP_ENGINE_USER_META_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return resolve_engine_state_path().with_name("user-meta.json")
+
+
+def resolve_engine_event_log_path() -> Path:
+    configured = os.environ.get("EARLOOP_ENGINE_EVENT_LOG_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return resolve_engine_state_path().with_name("session-events.jsonl")
 
 
 def _profile_from_dict(payload: dict[str, Any]) -> SavedProfile:
@@ -80,3 +96,51 @@ def save_persisted_domain_state(state: DomainState, path: Path | None = None) ->
     )
     temp_path.replace(state_path)
     return state_path
+
+
+def load_or_create_user_identity(path: Path | None = None) -> dict[str, str]:
+    meta_path = path or resolve_engine_user_meta_path()
+    if meta_path.exists():
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("userId"), str) and raw.get("userId"):
+                created_at = str(raw.get("createdAt") or "")
+                app_build_version = str(raw.get("appBuildVersion") or "")
+                return {
+                    "userId": raw["userId"],
+                    "createdAt": created_at or datetime.now(timezone.utc).isoformat(),
+                    "appBuildVersion": app_build_version,
+                }
+        except Exception:
+            pass
+
+    identity = {
+        "userId": str(uuid4()),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "appBuildVersion": "",
+    }
+    save_user_identity(identity, meta_path)
+    return identity
+
+
+def save_user_identity(identity: dict[str, str], path: Path | None = None) -> Path:
+    meta_path = path or resolve_engine_user_meta_path()
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "userId": str(identity.get("userId") or ""),
+        "createdAt": str(identity.get("createdAt") or ""),
+        "appBuildVersion": str(identity.get("appBuildVersion") or ""),
+    }
+    temp_path = meta_path.with_suffix(f"{meta_path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(meta_path)
+    return meta_path
+
+
+def append_event_log_entry(entry: dict[str, Any], path: Path | None = None) -> Path:
+    log_path = path or resolve_engine_event_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(entry, ensure_ascii=False))
+        fp.write("\n")
+    return log_path

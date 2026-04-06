@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime, timezone
 from uuid import uuid4
 from dataclasses import replace
 from typing import Any
 
-from .persistence import load_persisted_domain_state, save_persisted_domain_state
+import numpy as np
+
+from earloop import __version__ as EARLOOP_VERSION
+from earloop.ml.preference.linear import LinearPreferenceModel
+from earloop.ml.types import PerceptualPair, PerceptualProfile, PreferenceChoice
+
+from .persistence import (
+    append_event_log_entry,
+    load_or_create_user_identity,
+    save_user_identity,
+    load_persisted_domain_state,
+    save_persisted_domain_state,
+)
 from .types import (
     DomainState,
     EngineAudioConfig,
@@ -58,6 +71,9 @@ STARTUP_STEPS = [
     "Подключение модели персонализации",
     "Генерация первых вариантов",
 ]
+PERCEPTUAL_DIM = 6
+MODEL_VERSION = "linear_preference_v1"
+EVENT_LOG_TAIL_LIMIT = 128
 
 
 def _default_profile_params() -> PerceptualParams:
@@ -207,6 +223,80 @@ def _apply_feedback(params: PerceptualParams, feedback: str) -> PerceptualParams
     return _clone_params(params)
 
 
+def _params_to_vector(params: PerceptualParams) -> np.ndarray:
+    return np.asarray(
+        [
+            params.bass,
+            params.tilt,
+            params.presence,
+            params.air,
+            params.lowmid,
+            params.sparkle,
+        ],
+        dtype=np.float32,
+    )
+
+
+def _params_to_profile(params: PerceptualParams, *, profile_id: str | None = None) -> PerceptualProfile:
+    return PerceptualProfile(values=_params_to_vector(params), profile_id=profile_id)
+
+
+def _model_state_from_session(session: SessionState | None) -> dict[str, Any]:
+    if session is not None and isinstance(session.model_state, dict) and session.model_state.get("weights"):
+        return dict(session.model_state)
+    return {
+        "modelType": "linear_preference",
+        "dim": PERCEPTUAL_DIM,
+        "learningRate": 0.1,
+        "l2Reg": 0.0,
+        "weights": [0.0] * PERCEPTUAL_DIM,
+        "version": 1,
+    }
+
+
+def _serialize_model_state(model: LinearPreferenceModel) -> dict[str, Any]:
+    state = model.get_state()
+    return {
+        "modelType": state.model_type,
+        "dim": state.dim,
+        "learningRate": state.learning_rate,
+        "l2Reg": state.l2_reg,
+        "weights": [float(x) for x in state.weights],
+        "version": state.version,
+    }
+
+
+def _build_candidate_pool(base_params: PerceptualParams, *, pair_version: int, pool_size: int = 14) -> list[PerceptualParams]:
+    # candidate[0] stays close to base to keep local continuity.
+    params_pool: list[PerceptualParams] = [PerceptualParams(**base_params.to_dict())]
+    scales = (0.30, 0.18, 0.26, 0.24, 0.22, 0.25)
+    for i in range(pool_size):
+        seed = pair_version * 100 + i + 1
+
+        def sample(axis: int, scale: float) -> float:
+            return (_pseudo_random(seed + axis * 0.173) * 2.0 - 1.0) * scale
+
+        params_pool.append(
+            PerceptualParams(
+                bass=round(_clamp(base_params.bass + sample(1, scales[0]), -1.0, 1.0), 2),
+                tilt=round(_clamp(base_params.tilt + sample(2, scales[1]), -1.0, 1.0), 2),
+                presence=round(_clamp(base_params.presence + sample(3, scales[2]), -1.0, 1.0), 2),
+                air=round(_clamp(base_params.air + sample(4, scales[3]), -1.0, 1.0), 2),
+                lowmid=round(_clamp(base_params.lowmid + sample(5, scales[4]), -1.0, 1.0), 2),
+                sparkle=round(_clamp(base_params.sparkle + sample(6, scales[5]), -1.0, 1.0), 2),
+            )
+        )
+    return params_pool
+
+
+def _resolve_event_type(*, selected_target: str, feedback: str) -> str | None:
+    if selected_target in {"A", "B"}:
+        return "pair_choice"
+    if selected_target == "base" and feedback != "none":
+        return "directional_feedback"
+    return None
+
+
 def _slugify_profile_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
     slug = slug.strip("-")
@@ -215,6 +305,12 @@ def _slugify_profile_name(name: str) -> str:
 
 class InMemoryEngineStorage:
     def __init__(self) -> None:
+        self._app_build_version = str(EARLOOP_VERSION)
+        self._user_identity = load_or_create_user_identity()
+        if not self._user_identity.get("appBuildVersion"):
+            self._user_identity["appBuildVersion"] = self._app_build_version
+            save_user_identity(self._user_identity)
+
         persisted_state = load_persisted_domain_state()
         if persisted_state is not None:
             self._state = DomainState(
@@ -311,6 +407,8 @@ class InMemoryEngineStorage:
                 )
             ),
             history=[dict(entry) for entry in self._state.session.history],
+            model_state=dict(self._state.session.model_state),
+            event_log_tail=[dict(entry) for entry in self._state.session.event_log_tail],
         )
         return DomainState(
             profiles=self.get_profiles(),
@@ -525,6 +623,107 @@ class InMemoryEngineStorage:
             pair_b=_build_pair(pair_version + 1, "B", session_base_params),
         )
 
+    def _init_preference_model(self, session: SessionState | None) -> LinearPreferenceModel:
+        state = _model_state_from_session(session)
+        dim = int(state.get("dim", PERCEPTUAL_DIM))
+        learning_rate = float(state.get("learningRate", 0.1))
+        l2_reg = float(state.get("l2Reg", 0.0))
+        weights = np.asarray(state.get("weights", [0.0] * dim), dtype=np.float32)
+        if weights.shape[0] != dim:
+            weights = np.zeros(dim, dtype=np.float32)
+        return LinearPreferenceModel(
+            dim=dim,
+            learning_rate=learning_rate,
+            l2_reg=l2_reg,
+            initial_weights=weights,
+        )
+
+    def _update_model_from_last_choice(
+        self,
+        *,
+        model: LinearPreferenceModel,
+        selected_target: str,
+        pair_a: PairData | None,
+        pair_b: PairData | None,
+    ) -> bool:
+        if pair_a is None or pair_b is None:
+            return False
+        if selected_target == "A":
+            choice = PreferenceChoice.LEFT
+        elif selected_target == "B":
+            choice = PreferenceChoice.RIGHT
+        else:
+            return False
+
+        model.update_from_choice(
+            PerceptualPair(
+                left=_params_to_profile(pair_a.params, profile_id="A"),
+                right=_params_to_profile(pair_b.params, profile_id="B"),
+                pair_id=f"{pair_a.pair_id}-{pair_b.pair_id}",
+            ),
+            choice,
+        )
+        return True
+
+    def _build_ml_pair(self, *, model: LinearPreferenceModel, next_base_params: PerceptualParams, pair_version: int) -> tuple[PairData, PairData]:
+        pool = _build_candidate_pool(next_base_params, pair_version=pair_version)
+        scored: list[tuple[PerceptualParams, float]] = []
+        for idx, candidate in enumerate(pool):
+            profile = _params_to_profile(candidate, profile_id=f"c{idx}")
+            scored.append((candidate, float(model.score(profile))))
+        scored.sort(key=lambda item: item[1], reverse=True)
+        if len(scored) < 2:
+            raise RuntimeError("candidate_pool_too_small")
+        pair_a_params, pair_a_score = scored[0]
+        pair_b_params, pair_b_score = scored[1]
+        return (
+            PairData(pair_id="A", params=_clone_params(pair_a_params), score=round(pair_a_score, 4)),
+            PairData(pair_id="B", params=_clone_params(pair_b_params), score=round(pair_b_score, 4)),
+        )
+
+    def _append_event_log(
+        self,
+        *,
+        event_type: str,
+        session_id: str,
+        pipeline_config: PipelineConfig,
+        iteration: int,
+        pair_version: int,
+        base_params_before: PerceptualParams,
+        pair_a_before: PairData | None,
+        pair_b_before: PairData | None,
+        selected_target: str,
+        feedback: str,
+        base_params_after: PerceptualParams,
+        generation_mode: str,
+        fallback_reason: str | None,
+    ) -> dict[str, Any]:
+        event = {
+            "event_type": event_type,
+            "user_id": str(self._user_identity.get("userId") or ""),
+            "session_id": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "app_build_version": self._app_build_version,
+            "model_version": MODEL_VERSION,
+            "iteration": iteration,
+            "pair_version": pair_version,
+            "base_params_before": base_params_before.to_dict(),
+            "pair_a_params": pair_a_before.params.to_dict() if pair_a_before is not None else None,
+            "pair_b_params": pair_b_before.params.to_dict() if pair_b_before is not None else None,
+            "selected_target": selected_target,
+            "base_params_after": base_params_after.to_dict(),
+            "generation_mode": generation_mode,
+            "fallback_reason": fallback_reason,
+            "pipeline_model_id": pipeline_config.model_id,
+        }
+        if event_type == "directional_feedback":
+            event["feedback"] = feedback
+        try:
+            append_event_log_entry(event)
+        except Exception as exc:
+            event["event_log_error"] = str(exc)
+        return event
+
     def create_session(self, payload: dict[str, Any]) -> SessionSnapshot:
         session_id = str(uuid4())
         session_base_profile_id = str(payload["sessionBaseProfileId"])
@@ -561,6 +760,10 @@ class InMemoryEngineStorage:
             current_pair_a=PairData(pair_id=snapshot.pair_a.pair_id, params=_clone_params(snapshot.pair_a.params), score=snapshot.pair_a.score),
             current_pair_b=PairData(pair_id=snapshot.pair_b.pair_id, params=_clone_params(snapshot.pair_b.params), score=snapshot.pair_b.score),
             history=[],
+            model_state=_model_state_from_session(None),
+            last_generation_mode="heuristic",
+            last_fallback_reason=None,
+            event_log_tail=[],
         )
         return snapshot
 
@@ -586,6 +789,7 @@ class InMemoryEngineStorage:
         pair_a = current_session.current_pair_a if current_session is not None else None
         pair_b = current_session.current_pair_b if current_session is not None else None
 
+        base_params_before = _clone_params(base_params)
         if selected_target == "A" and pair_a is not None:
             next_base_params = _blend_params(base_params, pair_a.params, 0.72)
             next_base_label = "вариант A"
@@ -596,22 +800,46 @@ class InMemoryEngineStorage:
             next_base_params = _clone_params(base_params)
             next_base_label = base_label
 
-        next_base_params = _apply_feedback(next_base_params, feedback)
+        if selected_target == "base" and feedback != "none":
+            next_base_params = _apply_feedback(next_base_params, feedback)
         iteration += 1
         progress = min(100, progress + 5)
         pair_version += 1
-        snapshot = self._build_session_snapshot(
+        model = self._init_preference_model(current_session)
+        model_updated = self._update_model_from_last_choice(
+            model=model,
+            selected_target=selected_target,
+            pair_a=pair_a,
+            pair_b=pair_b,
+        )
+        generation_mode = "ml_scored"
+        fallback_reason: str | None = None
+        try:
+            next_pair_a, next_pair_b = self._build_ml_pair(
+                model=model,
+                next_base_params=next_base_params,
+                pair_version=pair_version,
+            )
+        except Exception as exc:
+            generation_mode = "heuristic_fallback"
+            fallback_reason = str(exc)
+            next_pair_a = _build_pair(pair_version + 1, "A", next_base_params)
+            next_pair_b = _build_pair(pair_version + 1, "B", next_base_params)
+
+        snapshot = SessionSnapshot(
             session_id=current_session.session_id if current_session is not None else str(uuid4()),
             status="started",
-            session_base_profile=session_base_profile,
-            pipeline_config=pipeline_config,
-            session_base_params=next_base_params,
+            session_base_profile=_clone_profile(session_base_profile) if session_base_profile is not None else None,
+            session_base_params=_clone_params(next_base_params),
             session_base_label=next_base_label,
+            session_pipeline_config=_clone_pipeline_config(pipeline_config),
             iteration=iteration,
             progress=progress,
             pair_version=pair_version,
             last_feedback=feedback,
             last_selected_target=selected_target,
+            pair_a=next_pair_a,
+            pair_b=next_pair_b,
         )
         history = [*current_session.history] if current_session is not None else []
         history.append({
@@ -619,8 +847,31 @@ class InMemoryEngineStorage:
             "selectedTarget": selected_target,
             "feedback": feedback,
             "baseLabel": next_base_label,
+            "generationMode": generation_mode,
+            "fallbackReason": fallback_reason,
         })
         history = history[-24:]
+        event_type = _resolve_event_type(selected_target=selected_target, feedback=feedback)
+        event_log_tail = [*(current_session.event_log_tail if current_session is not None else [])]
+        if event_type is not None:
+            event = self._append_event_log(
+                event_type=event_type,
+                session_id=current_session.session_id if current_session is not None else snapshot.session_id,
+                pipeline_config=pipeline_config,
+                iteration=iteration,
+                pair_version=pair_version,
+                base_params_before=base_params_before,
+                pair_a_before=pair_a,
+                pair_b_before=pair_b,
+                selected_target=selected_target,
+                feedback=feedback,
+                base_params_after=next_base_params,
+                generation_mode=generation_mode,
+                fallback_reason=fallback_reason,
+            )
+            event_log_tail.append(event)
+        next_model_state = _serialize_model_state(model) if model_updated else _model_state_from_session(current_session)
+        event_log_tail = event_log_tail[-EVENT_LOG_TAIL_LIMIT:]
         session_id = current_session.session_id if current_session is not None else snapshot.session_id
         self._state.session = SessionState(
             session_id=session_id,
@@ -639,5 +890,9 @@ class InMemoryEngineStorage:
             current_pair_a=PairData(pair_id=snapshot.pair_a.pair_id, params=_clone_params(snapshot.pair_a.params), score=snapshot.pair_a.score),
             current_pair_b=PairData(pair_id=snapshot.pair_b.pair_id, params=_clone_params(snapshot.pair_b.params), score=snapshot.pair_b.score),
             history=history,
+            model_state=next_model_state,
+            last_generation_mode=generation_mode,
+            last_fallback_reason=fallback_reason,
+            event_log_tail=event_log_tail,
         )
         return snapshot

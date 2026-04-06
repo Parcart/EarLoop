@@ -288,6 +288,10 @@ class SessionState:
     current_pair_a: PairData | None = None
     current_pair_b: PairData | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
+    model_state: dict[str, Any] = field(default_factory=dict)
+    last_generation_mode: str = "heuristic"
+    last_fallback_reason: str | None = None
+    event_log_tail: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
