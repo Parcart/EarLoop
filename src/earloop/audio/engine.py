@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -28,6 +28,7 @@ class AudioEngine:
         latency: str = "low",
         queue_blocks: int = 16,
         processor: Optional[AudioProcessor] = None,
+        capture_extra_settings: Any | None = None,
     ):
         self.capture_device = capture_device
         self.playback_device = playback_device
@@ -36,6 +37,7 @@ class AudioEngine:
         self.blocksize = int(blocksize)
         self.dtype = dtype
         self.latency = latency
+        self.capture_extra_settings = capture_extra_settings
 
         self.processor: AudioProcessor = processor or PassthroughProcessor()
 
@@ -73,6 +75,7 @@ class AudioEngine:
                 channels=self.channels,
                 dtype=self.dtype,
                 latency=self.latency,
+                extra_settings=self.capture_extra_settings,
                 callback=self._input_callback,
             )
             self._output_stream = sd.OutputStream(
