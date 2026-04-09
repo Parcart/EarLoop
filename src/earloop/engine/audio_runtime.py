@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
+from earloop.utils.logging_utils import append_jsonl
 from earloop.utils.logging_utils import setup_logger
 
+from .persistence import describe_runtime_paths, resolve_audio_diagnostic_log_path
 from .types import AudioDeviceInfo, AudioDevicesSnapshot, AudioStatusSnapshot, EngineAudioConfig, EngineConfig, PerceptualParams, RuntimeProfileStatusSnapshot, SavedProfile, SessionPreviewStatusSnapshot
 
 if TYPE_CHECKING:
@@ -26,6 +29,8 @@ def _clone_audio_config(config: EngineAudioConfig | None) -> EngineAudioConfig |
 class AudioRuntimeController:
     def __init__(self) -> None:
         self._logger = setup_logger("earloop.audio-runtime")
+        self._runtime_paths = describe_runtime_paths()
+        self._diagnostic_preview_mode = os.getenv("EARLOOP_AUDIO_DIAGNOSTIC_MODE", "0") == "1"
         self._engine: AudioEngine | None = None
         self._pending_eq_profile: Any | None = None
         self._processing_enabled = True
@@ -35,6 +40,7 @@ class AudioRuntimeController:
             desired_config=None,
             last_error=None,
             last_applied_at=None,
+            diagnostics={},
         )
         self._runtime_profile_status = RuntimeProfileStatusSnapshot(
             active_profile_id=None,
@@ -46,6 +52,7 @@ class AudioRuntimeController:
             applied_to_audio=False,
             apply_status="not_applied",
             last_error=None,
+            diagnostics={},
         )
         self._session_preview_status = SessionPreviewStatusSnapshot(
             session_id=None,
@@ -58,7 +65,88 @@ class AudioRuntimeController:
             applied_to_audio=False,
             apply_status="idle",
             last_error=None,
+            diagnostics={},
         )
+
+    def _serialize_params(self, params: PerceptualParams | None) -> dict[str, float] | None:
+        return params.to_dict() if params is not None else None
+
+    def _engine_debug_snapshot(self) -> dict[str, Any]:
+        if self._engine is None:
+            return {
+                "enginePresent": False,
+                "engineRunning": False,
+                "processorClass": None,
+            }
+        snapshot = self._engine.get_debug_snapshot()
+        snapshot["enginePresent"] = True
+        snapshot["engineRunning"] = bool(snapshot.get("running"))
+        active_profile = getattr(self._engine.processor, "active_profile", None)
+        snapshot["activeEqProfileName"] = getattr(active_profile, "name", None)
+        snapshot["activeEqProfileId"] = getattr(active_profile, "profile_id", None)
+        return snapshot
+
+    def _resolve_device_labels(self, config: EngineAudioConfig | None) -> dict[str, str | None]:
+        if config is None:
+            return {
+                "inputDeviceId": None,
+                "outputDeviceId": None,
+                "inputDeviceLabel": None,
+                "outputDeviceLabel": None,
+            }
+        return {
+            "inputDeviceId": config.input_device_id,
+            "outputDeviceId": config.output_device_id,
+            "inputDeviceLabel": config.input_device_id,
+            "outputDeviceLabel": config.output_device_id,
+        }
+
+    def _write_audio_diagnostic(self, event_name: str, **payload: Any) -> None:
+        try:
+            append_jsonl(resolve_audio_diagnostic_log_path(), event_name, **payload)
+        except Exception as exc:
+            self._logger.warning("failed to write audio diagnostic log: %s", exc)
+
+    def _build_common_diagnostics(self, *, config: EngineConfig | None = None) -> dict[str, Any]:
+        active_config = config.audio if config is not None else self._status.active_config or self._status.desired_config
+        diagnostics = {
+            "timestampUtc": datetime.now(timezone.utc).isoformat(),
+            "runtimePaths": dict(self._runtime_paths),
+            "diagnosticPreviewMode": self._diagnostic_preview_mode,
+            "processingEnabled": self._processing_enabled,
+            "audioStatus": self._status.status,
+            "audioLastError": self._status.last_error,
+            "runtimeProfileApplyStatus": self._runtime_profile_status.apply_status,
+            "runtimeProfileLastError": self._runtime_profile_status.last_error,
+            "sessionPreviewApplyStatus": self._session_preview_status.apply_status,
+            "sessionPreviewLastError": self._session_preview_status.last_error,
+            **self._resolve_device_labels(active_config),
+            "engine": self._engine_debug_snapshot(),
+        }
+        return diagnostics
+
+    def _apply_diagnostic_preview_transform(self, *, target: str, params: PerceptualParams) -> PerceptualParams:
+        if not self._diagnostic_preview_mode:
+            return params
+        if target == "A":
+            return PerceptualParams(
+                bass=0.95,
+                tilt=-0.45,
+                presence=0.82,
+                air=0.08,
+                lowmid=-0.22,
+                sparkle=0.88,
+            )
+        if target == "B":
+            return PerceptualParams(
+                bass=-0.62,
+                tilt=0.32,
+                presence=-0.48,
+                air=0.82,
+                lowmid=0.44,
+                sparkle=-0.36,
+            )
+        return params
 
     def get_status(self) -> AudioStatusSnapshot:
         return AudioStatusSnapshot(
@@ -67,6 +155,7 @@ class AudioRuntimeController:
             desired_config=_clone_audio_config(self._status.desired_config),
             last_error=self._status.last_error,
             last_applied_at=self._status.last_applied_at,
+            diagnostics=dict(self._status.diagnostics),
         )
 
     def get_runtime_profile_status(self) -> RuntimeProfileStatusSnapshot:
@@ -80,6 +169,7 @@ class AudioRuntimeController:
             applied_to_audio=self._runtime_profile_status.applied_to_audio,
             apply_status=self._runtime_profile_status.apply_status,
             last_error=self._runtime_profile_status.last_error,
+            diagnostics=dict(self._runtime_profile_status.diagnostics),
         )
 
     def get_session_preview_status(self) -> SessionPreviewStatusSnapshot:
@@ -94,6 +184,7 @@ class AudioRuntimeController:
             applied_to_audio=self._session_preview_status.applied_to_audio,
             apply_status=self._session_preview_status.apply_status,
             last_error=self._session_preview_status.last_error,
+            diagnostics=dict(self._session_preview_status.diagnostics),
         )
 
     def list_audio_devices(self) -> AudioDevicesSnapshot:
@@ -168,12 +259,21 @@ class AudioRuntimeController:
 
         if import_error is not None or audio_engine_cls is None or passthrough_processor_cls is None:
             self._logger.error("audio runtime import unavailable: %s", import_error or "Audio runtime is unavailable")
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["importError"] = import_error or "Audio runtime is unavailable"
             self._status = AudioStatusSnapshot(
                 status="failed",
                 active_config=_clone_audio_config(self._status.active_config),
                 desired_config=desired,
                 last_error=import_error or "Audio runtime is unavailable",
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="import_failed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
 
@@ -190,22 +290,40 @@ class AudioRuntimeController:
             )
         except LookupError as exc:
             self._logger.warning("audio device resolution failed: %s", exc)
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["deviceResolutionError"] = str(exc)
             self._status = AudioStatusSnapshot(
                 status="device_unavailable",
                 active_config=_clone_audio_config(self._status.active_config),
                 desired_config=desired,
                 last_error=str(exc),
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="device_resolution_failed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
         except Exception as exc:
             self._logger.exception("audio device resolution crashed")
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["deviceResolutionCrash"] = str(exc)
             self._status = AudioStatusSnapshot(
                 status="failed",
                 active_config=_clone_audio_config(self._status.active_config),
                 desired_config=desired,
                 last_error=str(exc),
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="device_resolution_crashed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
 
@@ -231,33 +349,61 @@ class AudioRuntimeController:
             )
         except ValueError as exc:
             self._logger.warning("audio setting validation failed: %s", exc)
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["validationError"] = str(exc)
             self._status = AudioStatusSnapshot(
                 status="failed",
                 active_config=_clone_audio_config(self._status.active_config),
                 desired_config=desired,
                 last_error=str(exc),
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="validation_failed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
         except Exception as exc:
             self._logger.exception("audio setting validation crashed")
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["validationCrash"] = str(exc)
             self._status = AudioStatusSnapshot(
                 status="failed",
                 active_config=_clone_audio_config(self._status.active_config),
                 desired_config=desired,
                 last_error=str(exc),
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="validation_crashed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
 
         if self._engine is not None and getattr(self._engine, "_running", False) and self._same_audio_config(self._status.active_config, runtime_config):
             self._logger.info("audio engine already running with the same config; keeping active streams")
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["restartSkipped"] = True
             self._status = AudioStatusSnapshot(
                 status="applied",
                 active_config=runtime_config,
                 desired_config=desired,
                 last_error=None,
                 last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="already_running",
+                desiredConfig=desired.to_dict(),
+                activeConfig=runtime_config.to_dict(),
+                diagnostics=diagnostics,
             )
             return self.get_status()
 
@@ -290,6 +436,18 @@ class AudioRuntimeController:
                     desired_config=desired,
                     last_error=None,
                     last_applied_at=timestamp,
+                    diagnostics={
+                        **self._build_common_diagnostics(config=config),
+                        "resolvedSampleRate": candidate_config.sample_rate,
+                        "sampleRateCandidates": sample_rate_candidates,
+                    },
+                )
+                self._write_audio_diagnostic(
+                    "apply_engine_config",
+                    stage="applied",
+                    desiredConfig=desired.to_dict(),
+                    activeConfig=candidate_config.to_dict(),
+                    diagnostics=self._status.diagnostics,
                 )
                 return self.get_status()
             except Exception as exc:
@@ -307,6 +465,16 @@ class AudioRuntimeController:
             desired_config=desired,
             last_error=last_start_error or "Audio engine start failed",
             last_applied_at=timestamp,
+            diagnostics={
+                **self._build_common_diagnostics(config=config),
+                "sampleRateCandidates": sample_rate_candidates,
+            },
+        )
+        self._write_audio_diagnostic(
+            "apply_engine_config",
+            stage="start_failed",
+            desiredConfig=desired.to_dict(),
+            diagnostics=self._status.diagnostics,
         )
         return self.get_status()
 
@@ -322,6 +490,7 @@ class AudioRuntimeController:
             applied_to_audio=False,
             apply_status="idle",
             last_error=None,
+            diagnostics={},
         )
         if profile is None:
             self._pending_eq_profile = None
@@ -336,9 +505,16 @@ class AudioRuntimeController:
                 applied_to_audio=self._engine is not None,
                 apply_status="bypass" if not self._processing_enabled else "not_applied",
                 last_error=None,
+                diagnostics=self._build_common_diagnostics(config=config),
             )
             if self._engine is not None:
                 self._engine.set_processor(self._create_passthrough_processor())
+            self._write_audio_diagnostic(
+                "apply_active_profile",
+                stage="cleared",
+                profileId=None,
+                diagnostics=self._runtime_profile_status.diagnostics,
+            )
             return self.get_runtime_profile_status()
 
         try:
@@ -374,6 +550,20 @@ class AudioRuntimeController:
                 applied_to_audio=applied_to_audio,
                 apply_status=apply_status,
                 last_error=last_error,
+                diagnostics={
+                    **self._build_common_diagnostics(config=config),
+                    "profileId": profile.profile_id,
+                    "profileName": profile.name,
+                    "profileParams": profile.params.to_dict(),
+                },
+            )
+            self._write_audio_diagnostic(
+                "apply_active_profile",
+                stage="applied",
+                profileId=profile.profile_id,
+                profileName=profile.name,
+                profileParams=profile.params.to_dict(),
+                diagnostics=self._runtime_profile_status.diagnostics,
             )
             return self.get_runtime_profile_status()
         except Exception as exc:
@@ -388,6 +578,20 @@ class AudioRuntimeController:
                 applied_to_audio=False,
                 apply_status="failed",
                 last_error=str(exc),
+                diagnostics={
+                    **self._build_common_diagnostics(config=config),
+                    "profileId": profile.profile_id,
+                    "profileName": profile.name,
+                    "profileParams": profile.params.to_dict(),
+                },
+            )
+            self._write_audio_diagnostic(
+                "apply_active_profile",
+                stage="failed",
+                profileId=profile.profile_id,
+                profileName=profile.name,
+                profileParams=profile.params.to_dict(),
+                diagnostics=self._runtime_profile_status.diagnostics,
             )
             return self.get_runtime_profile_status()
 
@@ -406,11 +610,12 @@ class AudioRuntimeController:
         config: EngineConfig,
     ) -> SessionPreviewStatusSnapshot:
         self._logger.info("session preview requested: session_id=%s target=%s label=%s", session_id, target, label)
+        preview_params = self._apply_diagnostic_preview_transform(target=target, params=params)
         try:
             eq_profile, eq_curve = self._build_eq_profile_from_params(
                 profile_id=f"session-preview:{session_id}:{target}",
                 label=label,
-                params=params,
+                params=preview_params,
             )
             applied_to_audio = False
             apply_status = "ready"
@@ -443,6 +648,25 @@ class AudioRuntimeController:
                 applied_to_audio=applied_to_audio,
                 apply_status=apply_status,
                 last_error=None,
+                diagnostics={
+                    **self._build_common_diagnostics(config=config),
+                    "sessionId": session_id,
+                    "target": target,
+                    "label": label,
+                    "requestedParams": params.to_dict(),
+                    "effectiveParams": preview_params.to_dict(),
+                    "previewSource": "diagnostic_mode" if self._diagnostic_preview_mode and target in {"A", "B"} else "session_target",
+                },
+            )
+            self._write_audio_diagnostic(
+                "apply_session_preview",
+                stage="applied" if applied_to_audio else "prepared",
+                sessionId=session_id,
+                target=target,
+                label=label,
+                requestedParams=params.to_dict(),
+                effectiveParams=preview_params.to_dict(),
+                diagnostics=self._session_preview_status.diagnostics,
             )
             return self.get_session_preview_status()
         except Exception as exc:
@@ -458,6 +682,24 @@ class AudioRuntimeController:
                 applied_to_audio=False,
                 apply_status="failed",
                 last_error=str(exc),
+                diagnostics={
+                    **self._build_common_diagnostics(config=config),
+                    "sessionId": session_id,
+                    "target": target,
+                    "label": label,
+                    "requestedParams": params.to_dict(),
+                    "effectiveParams": preview_params.to_dict(),
+                },
+            )
+            self._write_audio_diagnostic(
+                "apply_session_preview",
+                stage="failed",
+                sessionId=session_id,
+                target=target,
+                label=label,
+                requestedParams=params.to_dict(),
+                effectiveParams=preview_params.to_dict(),
+                diagnostics=self._session_preview_status.diagnostics,
             )
             return self.get_session_preview_status()
 

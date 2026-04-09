@@ -34,7 +34,8 @@ class ParametricEqMapper(EqMapper):
         *,
         feature_names: list[str] | None = None,
         max_abs_gain_db: float = 12.0,
-        preamp_scale_db: float = 2.0,
+        preamp_scale_db: float = 0.4,
+        preamp_threshold_db: float = 1.0,
         tilt_scale_db: float = 4.0,
         bass_scale_db: float = 5.0,
         lowmid_scale_db: float = 4.0,
@@ -59,6 +60,7 @@ class ParametricEqMapper(EqMapper):
 
         self.max_abs_gain_db = float(max_abs_gain_db)
         self.preamp_scale_db = float(preamp_scale_db)
+        self.preamp_threshold_db = float(preamp_threshold_db)
 
         self._log_f = np.log2(self.freqs_hz.astype(np.float64))
         self._log_f_center = float(np.mean(self._log_f))
@@ -93,9 +95,11 @@ class ParametricEqMapper(EqMapper):
         curve = self._smooth_curve(curve)
         curve = np.clip(curve, -self.max_abs_gain_db, self.max_abs_gain_db)
 
-        # Простой preamp: чем больше суммарный boost, тем сильнее компенсация.
+        # Не штрафуем почти нулевую кривую по громкости.
+        # Компенсация начинается только после заметного boost.
         max_boost = float(max(0.0, np.max(curve)))
-        preamp_db = -min(self.preamp_scale_db + 0.35 * max_boost, 9.0)
+        effective_boost = max(0.0, max_boost - self.preamp_threshold_db)
+        preamp_db = -min(self.preamp_scale_db * effective_boost, 9.0)
 
         return EqCurve(
             freqs_hz=self.freqs_hz,

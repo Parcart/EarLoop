@@ -10,6 +10,7 @@ from earloop.utils.logging_utils import setup_logger
 
 from .audio_runtime import AudioRuntimeController
 from .handlers import EngineCommandRouter
+from .persistence import describe_runtime_paths
 from .protocol import (
     EngineResponse,
     ProtocolValidationError,
@@ -67,6 +68,7 @@ class EngineProtocolServer:
 
 
 def run_stdio_server() -> None:
+    setup_logger("earloop.engine-server").info("engine stdio server starting with runtime paths: %s", describe_runtime_paths())
     EngineProtocolServer().serve_stdio()
 
 

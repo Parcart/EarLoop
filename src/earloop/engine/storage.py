@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -12,9 +13,11 @@ import numpy as np
 from earloop import __version__ as EARLOOP_VERSION
 from earloop.ml.preference.linear import LinearPreferenceModel
 from earloop.ml.types import PerceptualPair, PerceptualProfile, PreferenceChoice
+from earloop.utils.logging_utils import setup_logger
 
 from .persistence import (
     append_event_log_entry,
+    describe_runtime_paths,
     load_or_create_user_identity,
     save_user_identity,
     load_persisted_domain_state,
@@ -74,6 +77,7 @@ STARTUP_STEPS = [
 PERCEPTUAL_DIM = 6
 MODEL_VERSION = "linear_preference_v1"
 EVENT_LOG_TAIL_LIMIT = 128
+STRICT_DESKTOP_ENV_VARS = ("EARLOOP_STRICT_DESKTOP_MODE", "EARLOOP_APP_IS_PACKAGED")
 
 
 def _default_profile_params() -> PerceptualParams:
@@ -84,6 +88,15 @@ def _default_profile_params() -> PerceptualParams:
         air=0.16,
         lowmid=-0.12,
         sparkle=0.20,
+    )
+
+
+def _default_audio_config() -> EngineAudioConfig:
+    return EngineAudioConfig(
+        input_device_id="CABLE Output (VB-Audio Virtual Cable)",
+        output_device_id="Динамики (Razer Barracuda X 2.4)",
+        sample_rate="48000",
+        channels="2",
     )
 
 
@@ -196,20 +209,20 @@ def _apply_feedback(params: PerceptualParams, feedback: str) -> PerceptualParams
     if feedback == "less_harsh":
         return PerceptualParams(
             bass=params.bass,
-            tilt=round(_clamp(params.tilt - 0.08, -1.0, 1.0), 2),
-            presence=round(_clamp(params.presence - 0.12, -1.0, 1.0), 2),
-            air=round(_clamp(params.air - 0.04, -1.0, 1.0), 2),
-            lowmid=round(_clamp(params.lowmid + 0.06, -1.0, 1.0), 2),
-            sparkle=round(_clamp(params.sparkle - 0.08, -1.0, 1.0), 2),
+            tilt=round(_clamp(params.tilt - 0.06, -1.0, 1.0), 2),
+            presence=round(_clamp(params.presence - 0.10, -1.0, 1.0), 2),
+            air=round(_clamp(params.air - 0.02, -1.0, 1.0), 2),
+            lowmid=round(_clamp(params.lowmid + 0.05, -1.0, 1.0), 2),
+            sparkle=round(_clamp(params.sparkle - 0.06, -1.0, 1.0), 2),
         )
     if feedback == "more_air":
         return PerceptualParams(
             bass=params.bass,
-            tilt=round(_clamp(params.tilt + 0.03, -1.0, 1.0), 2),
-            presence=round(_clamp(params.presence + 0.05, -1.0, 1.0), 2),
-            air=round(_clamp(params.air + 0.14, -1.0, 1.0), 2),
-            lowmid=params.lowmid,
-            sparkle=round(_clamp(params.sparkle + 0.07, -1.0, 1.0), 2),
+            tilt=round(_clamp(params.tilt + 0.04, -1.0, 1.0), 2),
+            presence=round(_clamp(params.presence - 0.06, -1.0, 1.0), 2),
+            air=round(_clamp(params.air + 0.12, -1.0, 1.0), 2),
+            lowmid=round(_clamp(params.lowmid - 0.03, -1.0, 1.0), 2),
+            sparkle=round(_clamp(params.sparkle + 0.08, -1.0, 1.0), 2),
         )
     if feedback == "warmer":
         return PerceptualParams(
@@ -303,8 +316,21 @@ def _slugify_profile_name(name: str) -> str:
     return slug or "profile"
 
 
+def _is_strict_desktop_mode() -> bool:
+    return any(os.getenv(name) == "1" for name in STRICT_DESKTOP_ENV_VARS)
+
+
+def _is_mock_device_id(device_id: str) -> bool:
+    return str(device_id).strip().lower().startswith("mock-")
+
+
+def _contains_mock_audio_devices(config: EngineAudioConfig) -> bool:
+    return _is_mock_device_id(config.input_device_id) or _is_mock_device_id(config.output_device_id)
+
+
 class InMemoryEngineStorage:
     def __init__(self) -> None:
+        self._logger = setup_logger("earloop.engine-storage")
         self._app_build_version = str(EARLOOP_VERSION)
         self._user_identity = load_or_create_user_identity()
         if not self._user_identity.get("appBuildVersion"):
@@ -312,14 +338,24 @@ class InMemoryEngineStorage:
             save_user_identity(self._user_identity)
 
         persisted_state = load_persisted_domain_state()
+        persist_sanitized_state = False
         if persisted_state is not None:
+            persisted_config = EngineConfig(
+                audio=replace(persisted_state.config.audio),
+                active_profile_id=persisted_state.config.active_profile_id,
+                processing_enabled=persisted_state.config.processing_enabled,
+            )
+            if _is_strict_desktop_mode() and _contains_mock_audio_devices(persisted_config.audio):
+                self._logger.error(
+                    "mock device ids found in persisted config for strict desktop mode; resetting audio config: input=%s output=%s",
+                    persisted_config.audio.input_device_id,
+                    persisted_config.audio.output_device_id,
+                )
+                persisted_config.audio = _default_audio_config()
+                persist_sanitized_state = True
             self._state = DomainState(
                 profiles=[_clone_profile(profile) for profile in persisted_state.profiles],
-                config=EngineConfig(
-                    audio=replace(persisted_state.config.audio),
-                    active_profile_id=persisted_state.config.active_profile_id,
-                    processing_enabled=persisted_state.config.processing_enabled,
-                ),
+                config=persisted_config,
                 session=None,
             )
         else:
@@ -327,17 +363,14 @@ class InMemoryEngineStorage:
             self._state = DomainState(
                 profiles=[_clone_profile(profile) for profile in initial_profiles],
                 config=EngineConfig(
-                    audio=EngineAudioConfig(
-                        input_device_id="CABLE Output (VB-Audio Virtual Cable)",
-                        output_device_id="Динамики (Razer Barracuda X 2.4)",
-                        sample_rate="48000",
-                        channels="2",
-                    ),
+                    audio=_default_audio_config(),
                     active_profile_id=initial_profiles[0].profile_id,
                     processing_enabled=True,
                 ),
                 session=None,
             )
+        if persist_sanitized_state:
+            self._persist_domain_state()
 
     def _persist_domain_state(self) -> None:
         save_persisted_domain_state(
@@ -367,6 +400,8 @@ class InMemoryEngineStorage:
             pipeline_catalog={key: [dict(option) for option in value] for key, value in PIPELINE_CATALOG.items()},
             session_default_profile_id=SESSION_DEFAULT_PROFILE_ID,
             startup_steps=list(STARTUP_STEPS),
+            backend_mode="real",
+            log_paths=describe_runtime_paths(),
         )
 
     def get_engine_config(self) -> EngineConfig:
@@ -444,7 +479,7 @@ class InMemoryEngineStorage:
         if not any(profile.profile_id == next_active for profile in self._state.profiles):
             next_active = self._state.profiles[0].profile_id if self._state.profiles else SESSION_DEFAULT_PROFILE_ID
 
-        self._state.config = EngineConfig(
+        next_config = EngineConfig(
             audio=EngineAudioConfig(
                 input_device_id=str(audio_payload.get("inputDeviceId", current.audio.input_device_id)),
                 output_device_id=str(audio_payload.get("outputDeviceId", current.audio.output_device_id)),
@@ -454,6 +489,15 @@ class InMemoryEngineStorage:
             active_profile_id=next_active,
             processing_enabled=bool(runtime_payload.get("processingEnabled", current.processing_enabled)),
         )
+        if _is_strict_desktop_mode() and _contains_mock_audio_devices(next_config.audio):
+            self._logger.error(
+                "blocked mock audio config in strict desktop mode: input=%s output=%s",
+                next_config.audio.input_device_id,
+                next_config.audio.output_device_id,
+            )
+            raise ValueError("Mock audio device ids are not allowed in packaged desktop mode")
+
+        self._state.config = next_config
         self._persist_domain_state()
         return self.get_engine_config()
 
@@ -722,6 +766,13 @@ class InMemoryEngineStorage:
             append_event_log_entry(event)
         except Exception as exc:
             event["event_log_error"] = str(exc)
+            self._logger.warning(
+                "failed to append session event log: session_id=%s iteration=%s event_type=%s error=%s",
+                session_id,
+                iteration,
+                event_type,
+                exc,
+            )
         return event
 
     def create_session(self, payload: dict[str, Any]) -> SessionSnapshot:
@@ -823,6 +874,13 @@ class InMemoryEngineStorage:
         except Exception as exc:
             generation_mode = "heuristic_fallback"
             fallback_reason = str(exc)
+            self._logger.warning(
+                "ml pair generation fallback: session_id=%s iteration=%s pair_version=%s error=%s",
+                current_session.session_id if current_session is not None else "new-session",
+                iteration,
+                pair_version,
+                exc,
+            )
             next_pair_a = _build_pair(pair_version + 1, "A", next_base_params)
             next_pair_b = _build_pair(pair_version + 1, "B", next_base_params)
 

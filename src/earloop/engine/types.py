@@ -187,6 +187,7 @@ class AudioStatusSnapshot:
     desired_config: EngineAudioConfig | None
     last_error: str | None = None
     last_applied_at: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +196,7 @@ class AudioStatusSnapshot:
             "desiredConfig": self.desired_config.to_dict() if self.desired_config is not None else None,
             "lastError": self.last_error,
             "lastAppliedAt": self.last_applied_at,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -209,6 +211,7 @@ class RuntimeProfileStatusSnapshot:
     applied_to_audio: bool = False
     apply_status: str = "not_applied"
     last_error: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -221,6 +224,7 @@ class RuntimeProfileStatusSnapshot:
             "appliedToAudio": self.applied_to_audio,
             "applyStatus": self.apply_status,
             "lastError": self.last_error,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -236,6 +240,7 @@ class SessionPreviewStatusSnapshot:
     applied_to_audio: bool = False
     apply_status: str = "idle"
     last_error: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -249,6 +254,7 @@ class SessionPreviewStatusSnapshot:
             "appliedToAudio": self.applied_to_audio,
             "applyStatus": self.apply_status,
             "lastError": self.last_error,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -372,8 +378,10 @@ class EngineStatus:
     pipeline_catalog: dict[str, list[dict[str, str]]]
     session_default_profile_id: str
     startup_steps: list[str]
+    backend_mode: str = "unknown"
     audio_status: AudioStatusSnapshot | None = None
     runtime_profile_status: RuntimeProfileStatusSnapshot | None = None
+    log_paths: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -385,8 +393,10 @@ class EngineStatus:
             "pipelineCatalog": self.pipeline_catalog,
             "sessionDefaultProfileId": self.session_default_profile_id,
             "startupSteps": self.startup_steps,
+            "backendMode": self.backend_mode,
             "audioStatus": self.audio_status.to_dict() if self.audio_status is not None else None,
             "runtimeProfileStatus": self.runtime_profile_status.to_dict() if self.runtime_profile_status is not None else None,
+            "logPaths": dict(self.log_paths),
         }
 
 

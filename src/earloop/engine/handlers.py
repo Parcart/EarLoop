@@ -19,6 +19,65 @@ class EngineCommandRouter:
     audio_runtime: AudioRuntimeController
     logger = setup_logger("earloop.engine-router")
 
+    def _resolve_audio_device_labels(self, input_device_id: str | None, output_device_id: str | None) -> dict[str, str | None]:
+        try:
+            catalog = self.audio_runtime.list_audio_devices()
+            devices_by_id = {
+                device.device_id: device.label
+                for device in [*catalog.inputs, *catalog.outputs]
+            }
+        except Exception:
+            devices_by_id = {}
+        return {
+            "input": devices_by_id.get(input_device_id or "", input_device_id),
+            "output": devices_by_id.get(output_device_id or "", output_device_id),
+        }
+
+    def _log_update_engine_config_result(self, status) -> None:
+        attempted_config = status.desired_config.to_dict() if status.desired_config is not None else None
+        fallback_active_config = status.active_config.to_dict() if status.active_config is not None else None
+        attempted_labels = self._resolve_audio_device_labels(
+            status.desired_config.input_device_id if status.desired_config is not None else None,
+            status.desired_config.output_device_id if status.desired_config is not None else None,
+        )
+        fallback_active_labels = self._resolve_audio_device_labels(
+            status.active_config.input_device_id if status.active_config is not None else None,
+            status.active_config.output_device_id if status.active_config is not None else None,
+        )
+
+        if status.status == "applied":
+            self.logger.info(
+                "update_engine_config applied: status=%s active_config=%s active_device_labels=%s",
+                status.status,
+                fallback_active_config,
+                fallback_active_labels,
+            )
+            return
+
+        if status.active_config is not None:
+            self.logger.warning(
+                "update_engine_config failed; keeping previous active route | failure_status=%s details=%s attempted_config=%s attempted_devices=%s fallback_active_config=%s fallback_active_devices=%s kept_previous_active_route=%s",
+                status.status,
+                status.last_error,
+                attempted_config,
+                attempted_labels,
+                fallback_active_config,
+                fallback_active_labels,
+                True,
+            )
+            return
+
+        self.logger.error(
+            "update_engine_config failed with no active route | failure_status=%s details=%s attempted_config=%s attempted_devices=%s fallback_active_config=%s fallback_active_devices=%s kept_previous_active_route=%s",
+            status.status,
+            status.last_error,
+            attempted_config,
+            attempted_labels,
+            fallback_active_config,
+            fallback_active_labels,
+            False,
+        )
+
     def _sync_runtime_profile(self) -> None:
         config = self.storage.get_engine_config()
         active_profile = self.storage.get_active_profile()
@@ -35,12 +94,14 @@ class EngineCommandRouter:
         try:
             return build_success_response(request.request_id, handler(request.payload))
         except KeyError as exc:
+            self.logger.warning("request %s invalid payload: %s", request.request_id, exc.args[0])
             return build_error_response(
                 request.request_id,
                 code="invalid_payload",
                 message=f"Missing payload field: {exc.args[0]}",
             )
         except Exception as exc:
+            self.logger.exception("request %s command=%s failed", request.request_id, request.command)
             return build_error_response(
                 request.request_id,
                 code="handler_error",
@@ -97,13 +158,22 @@ class EngineCommandRouter:
         target = str(payload["target"])
         self.logger.info("preview_session_target requested: session_id=%s target=%s", session_id, target)
         params, label = self.storage.resolve_session_preview_target(session_id=session_id, target=target)
-        return self.audio_runtime.apply_session_preview(
+        result = self.audio_runtime.apply_session_preview(
             session_id=session_id,
             target=target,
             params=params,
             label=label,
             config=self.storage.get_engine_config(),
         ).to_dict()
+        self.logger.info(
+            "preview_session_target result: session_id=%s target=%s apply_status=%s applied_to_audio=%s last_error=%s",
+            session_id,
+            target,
+            result.get("applyStatus"),
+            result.get("appliedToAudio"),
+            result.get("lastError"),
+        )
+        return result
 
     def handle_set_active_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.logger.info("set_active_profile requested: profile_id=%s", payload["profileId"])
@@ -167,8 +237,9 @@ class EngineCommandRouter:
 
     def handle_update_engine_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self.storage.update_engine_config(payload["config"])
-        self.audio_runtime.apply_engine_config(config)
+        status = self.audio_runtime.apply_engine_config(config)
         self._sync_runtime_profile()
+        self._log_update_engine_config_result(status)
         return config.to_dict()
 
     def handle_get_domain_state(self, payload: dict[str, Any]) -> dict[str, Any]:

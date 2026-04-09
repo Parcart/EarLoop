@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from colorama import Fore, Style, init as colorama_init
+from earloop.utils.runtime_paths import ensure_runtime_directories, resolve_runtime_logs_dir
 
 colorama_init()
 
@@ -34,6 +35,21 @@ class ColorFormatter(logging.Formatter):
             record.levelname = original_levelname
 
 
+def _resolve_runtime_log_path() -> Path:
+    try:
+        import os
+
+        configured_value = os.environ.get("EARLOOP_RUNTIME_LOG_PATH")
+        runtime_log_path = Path(configured_value).expanduser().resolve() if configured_value else None
+    except Exception:
+        runtime_log_path = None
+    if runtime_log_path is not None:
+        runtime_log_path.parent.mkdir(parents=True, exist_ok=True)
+        return runtime_log_path
+    ensure_runtime_directories()
+    return resolve_runtime_logs_dir() / "runtime.log"
+
+
 def setup_logger(name: str, *, level: int = logging.INFO, worker_id: int | None = None) -> logging.Logger:
     logger_name = f"{name}-{worker_id}" if worker_id is not None else name
     logger = logging.getLogger(logger_name)
@@ -41,12 +57,28 @@ def setup_logger(name: str, *, level: int = logging.INFO, worker_id: int | None 
     logger.propagate = False
 
     if not logger.handlers:
-        handler = logging.StreamHandler(stream=sys.stdout)
-        handler.setFormatter(ColorFormatter(_FMT, datefmt=_DATE))
-        logger.addHandler(handler)
+        stream_handler = logging.StreamHandler(stream=sys.stderr)
+        stream_handler.setFormatter(ColorFormatter(_FMT, datefmt=_DATE))
+        stream_handler.setLevel(level)
+        logger.addHandler(stream_handler)
+
+        try:
+            file_handler = logging.FileHandler(_resolve_runtime_log_path(), encoding="utf-8")
+            file_handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE))
+            file_handler.setLevel(level)
+            logger.addHandler(file_handler)
+        except Exception as exc:
+            fallback_handler = logging.StreamHandler(stream=sys.stderr)
+            fallback_handler.setFormatter(ColorFormatter(_FMT, datefmt=_DATE))
+            fallback_handler.setLevel(logging.WARNING)
+            logger.addHandler(fallback_handler)
+            logger.warning("failed to initialize runtime file logger: %s", exc)
     else:
         for handler in logger.handlers:
-            handler.setFormatter(ColorFormatter(_FMT, datefmt=_DATE))
+            if isinstance(handler, logging.FileHandler):
+                handler.setFormatter(logging.Formatter(_FMT, datefmt=_DATE))
+            else:
+                handler.setFormatter(ColorFormatter(_FMT, datefmt=_DATE))
             handler.setLevel(level)
 
     return logger

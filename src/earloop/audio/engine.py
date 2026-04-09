@@ -58,6 +58,29 @@ class AudioEngine:
         with self._streams_lock:
             self.processor = processor
 
+    def get_debug_snapshot(self) -> dict[str, Any]:
+        with self._streams_lock:
+            input_stream = self._input_stream
+            output_stream = self._output_stream
+            processor = self.processor
+            return {
+                "running": self._running,
+                "captureDevice": self.capture_device,
+                "playbackDevice": self.playback_device,
+                "samplerate": self.samplerate,
+                "channels": self.channels,
+                "blocksize": self.blocksize,
+                "dtype": self.dtype,
+                "latency": self.latency,
+                "processorClass": processor.__class__.__name__ if processor is not None else None,
+                "inputStreamActive": bool(getattr(input_stream, "active", False)) if input_stream is not None else False,
+                "outputStreamActive": bool(getattr(output_stream, "active", False)) if output_stream is not None else False,
+                "inputQueueSize": self._capture_queue.qsize(),
+                "playbackQueueSize": self._playback_queue.qsize(),
+                "monitorQueueSize": self._monitor_queue.qsize(),
+                "xruns": dict(self.xruns),
+            }
+
     def start(self) -> None:
         if sd is None:
             raise RuntimeError("sounddevice is not installed. Install it before starting AudioEngine.")

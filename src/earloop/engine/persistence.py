@@ -8,14 +8,14 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .types import DomainState, EngineAudioConfig, EngineConfig, PerceptualParams, PipelineConfig, SavedProfile
+from earloop.utils.runtime_paths import ensure_runtime_directories, resolve_runtime_data_dir, resolve_runtime_logs_dir
 
 
 def resolve_engine_state_path() -> Path:
     configured = os.environ.get("EARLOOP_ENGINE_STATE_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    repo_root = Path(__file__).resolve().parents[3]
-    return repo_root / "data" / "engine" / "domain-state.json"
+    return resolve_runtime_data_dir() / "domain-state.json"
 
 
 def resolve_engine_user_meta_path() -> Path:
@@ -29,7 +29,35 @@ def resolve_engine_event_log_path() -> Path:
     configured = os.environ.get("EARLOOP_ENGINE_EVENT_LOG_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    return resolve_engine_state_path().with_name("session-events.jsonl")
+    return resolve_runtime_logs_dir() / "session-events.jsonl"
+
+
+def resolve_audio_diagnostic_log_path() -> Path:
+    configured = os.environ.get("EARLOOP_AUDIO_DIAGNOSTIC_LOG_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return resolve_runtime_logs_dir() / "audio-diagnostics.jsonl"
+
+
+def resolve_runtime_log_path() -> Path:
+    configured = os.environ.get("EARLOOP_RUNTIME_LOG_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return resolve_runtime_logs_dir() / "runtime.log"
+
+
+def describe_runtime_paths() -> dict[str, str]:
+    root, data_dir, logs_dir = ensure_runtime_directories()
+    return {
+        "runtimeRoot": str(root),
+        "dataDir": str(data_dir),
+        "logsDir": str(logs_dir),
+        "domainStatePath": str(resolve_engine_state_path()),
+        "userMetaPath": str(resolve_engine_user_meta_path()),
+        "eventLogPath": str(resolve_engine_event_log_path()),
+        "audioDiagnosticLogPath": str(resolve_audio_diagnostic_log_path()),
+        "runtimeLogPath": str(resolve_runtime_log_path()),
+    }
 
 
 def _profile_from_dict(payload: dict[str, Any]) -> SavedProfile:
