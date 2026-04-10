@@ -8,10 +8,6 @@ export type OnboardingStepPresentation = "spotlight" | "intro";
 export type OnboardingTargetPlacement = "auto" | "top" | "right" | "bottom" | "left" | "center";
 
 export type OnboardingTargetId =
-  | "audio-setup-card"
-  | "audio-setup-focus"
-  | "audio-input-select"
-  | "audio-output-select"
   | "sidebar-new-profile"
   | "session-base-profile"
   | "session-base-profile-dropdown"
@@ -23,8 +19,6 @@ export type OnboardingTargetId =
   | "result-actions";
 
 export type OnboardingEvent =
-  | "audio.input.changed"
-  | "audio.output.changed"
   | "navigation.new-profile.clicked"
   | "session.base-profile.interacted"
   | "session.start.clicked"

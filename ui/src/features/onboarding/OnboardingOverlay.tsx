@@ -181,16 +181,6 @@ function resolveStepSpecificPosition(
   cardSize: CardSize,
   targetRect: OnboardingTargetRect | null,
 ) {
-  if (stepId === "audio-devices") {
-    return {
-      placement: "right" as const,
-      top: SAFE_MARGIN + 6,
-      left: clamp(viewportWidth - cardSize.width - SAFE_MARGIN, SAFE_MARGIN, viewportWidth - cardSize.width - SAFE_MARGIN),
-      overlapArea: 0,
-      fits: true,
-    };
-  }
-
   if (stepId === "session-base-profile") {
     return {
       placement: "right" as const,
@@ -348,9 +338,7 @@ export function OnboardingOverlay() {
             className={`absolute text-white shadow-[0_20px_70px_rgba(0,0,0,0.42)] backdrop-blur-xl ${
               currentStep.presentation === "intro"
                 ? "left-1/2 top-1/2 w-[min(460px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[32px] border border-white/12 bg-[#0e131c]/96 p-7"
-                : currentStep.id === "audio-devices"
-                  ? "pointer-events-auto w-[min(420px,calc(100vw-40px))] rounded-[28px] border border-white/12 bg-[#10131d]/96 p-5"
-                  : "pointer-events-auto w-[min(380px,calc(100vw-32px))] rounded-[28px] border border-white/12 bg-[#10131d]/96 p-5"
+                : "pointer-events-auto w-[min(380px,calc(100vw-32px))] rounded-[28px] border border-white/12 bg-[#10131d]/96 p-5"
             }`}
             style={currentStep.presentation === "intro" ? undefined : { top: cardPosition.top, left: cardPosition.left }}
             initial={{ opacity: 0, y: 18, scale: 0.98 }}
@@ -392,11 +380,9 @@ export function OnboardingOverlay() {
 
                 <div className="mt-5 space-y-3">
                   <div className="text-xs leading-5 text-white/45">
-                    {currentStep.id === "audio-devices"
-                      ? "Убедись, что звук после обработки приходит на указанное устройство вывода."
-                      : currentStep.type === "action"
-                        ? "Сделай действие в интерфейсе и затем переходи дальше."
-                        : "Шаг можно прочитать и продолжить вручную."}
+                    {currentStep.type === "action"
+                      ? "Сделай действие в интерфейсе и затем переходи дальше."
+                      : "Шаг можно прочитать и продолжить вручную."}
                   </div>
                   <div className="flex items-center justify-end gap-2">
                     {currentStep.canGoBack !== false && currentIndex > 0 && (

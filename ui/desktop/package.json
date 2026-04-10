@@ -1,0 +1,43 @@
+{
+  "name": "desktop",
+  "productName": "EarLoop",
+  "version": "0.3.0-beta.1",
+  "description": "EarLoop desktop launcher",
+  "main": "main.js",
+  "scripts": {
+    "build": "electron-builder"
+  },
+  "type": "commonjs",
+  "build": {
+    "appId": "earloop.app",
+    "directories": {
+      "output": "../../dist/desktop"
+    },
+    "win": {
+      "target": "portable"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "ui-dist"
+      },
+      {
+        "from": "./backend",
+        "to": "backend"
+      },
+      {
+        "from": "../../dist/driver",
+        "to": "drivers"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^26.8.1"
+  }
+}

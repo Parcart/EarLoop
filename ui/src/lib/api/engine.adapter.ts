@@ -27,8 +27,18 @@ import type {
 } from "@/lib/api/engine.types";
 import type { SavedProfile } from "@/lib/types/ui";
 
-const ENGINE_BRIDGE_COMMAND_ENDPOINT = "/__engine/command";
-const ENGINE_BRIDGE_HEALTH_ENDPOINT = "/__engine/health";
+function resolveBridgeBaseUrl(): string {
+  return window.earloopDesktop?.engineBridgeBaseUrl ?? "";
+}
+
+function isDesktopBridgeMode(): boolean {
+  return Boolean(window.earloopDesktop?.isDesktop && resolveBridgeBaseUrl());
+}
+
+function resolveBridgeEndpoint(pathname: string): string {
+  const baseUrl = resolveBridgeBaseUrl();
+  return baseUrl ? `${baseUrl}${pathname}` : pathname;
+}
 
 type SyncBridgeTransport = EngineBridgeTransport & {
   requestSync: <TCommand extends EngineTransportCommand>(
@@ -44,10 +54,23 @@ function parseBridgeResponse<TCommand extends EngineTransportCommand>(raw: strin
   return payload;
 }
 
+function reportTransportIssue(command: EngineTransportCommand, error: string, fallbackUsed: boolean) {
+  const detail = {
+    command,
+    error,
+    fallbackUsed,
+    isDesktop: isDesktopBridgeMode(),
+    timestampUtc: new Date().toISOString(),
+  };
+  console.error(`[engine-adapter] ${command}: ${error}`);
+  window.dispatchEvent(new CustomEvent("earloop:transport-error", { detail }));
+}
+
 function createHttpEngineTransport(): SyncBridgeTransport {
   return {
     async request<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
-      const response = await fetch(ENGINE_BRIDGE_COMMAND_ENDPOINT, {
+      const endpoint = resolveBridgeEndpoint("/__engine/command");
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -69,7 +92,7 @@ function createHttpEngineTransport(): SyncBridgeTransport {
     },
     requestSync<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", ENGINE_BRIDGE_COMMAND_ENDPOINT, false);
+      xhr.open("POST", resolveBridgeEndpoint("/__engine/command"), false);
       xhr.setRequestHeader("Content-Type", "application/json");
       xhr.send(JSON.stringify({
         command: message.command,
@@ -123,7 +146,7 @@ function callTransportSync<TResponse>(
 ): TResponse {
   const response = transport.requestSync(message as never) as EngineTransportResponse;
   if (!response.ok || response.data === undefined) {
-    console.error(`[engine-adapter] ${response.error ?? "Unknown bridge error"}`);
+    reportTransportIssue(message.command, response.error ?? "Unknown bridge error", true);
     return runFallback();
   }
   return response.data as TResponse;
@@ -156,7 +179,31 @@ export function createEngineAdapter(
       return callTransportSync(transport, { command: "listProfiles", payload: undefined }, () => fallback.listProfiles());
     },
     previewSessionTarget(input: PreviewSessionTargetInput): SessionPreviewStatus {
-      return callTransportSync(transport, { command: "previewSessionTarget", payload: input }, () => fallback.previewSessionTarget(input));
+      const response = transport.requestSync({ command: "previewSessionTarget", payload: input });
+      if (!response.ok || response.data === undefined) {
+        const error = response.error ?? "Unknown bridge error";
+        reportTransportIssue("previewSessionTarget", error, !isDesktopBridgeMode());
+        if (isDesktopBridgeMode()) {
+          return {
+            sessionId: input.sessionId,
+            target: input.target,
+            label: null,
+            processorMode: "passthrough",
+            eqCurveReady: false,
+            eqBandCount: null,
+            preampDb: null,
+            appliedToAudio: false,
+            applyStatus: "failed",
+            lastError: `Desktop bridge error: ${error}`,
+            diagnostics: {
+              transportError: error,
+              fallbackUsed: false,
+            },
+          };
+        }
+        return fallback.previewSessionTarget(input);
+      }
+      return response.data;
     },
     setActiveProfile(input: SetActiveProfileInput): MainRuntimeState {
       return callTransportSync(transport, { command: "setActiveProfile", payload: input }, () => fallback.setActiveProfile(input));
@@ -193,7 +240,7 @@ export const adapterEngineApi = createEngineAdapter(engineAdapterTransport);
 
 export async function probeEngineAdapter(): Promise<boolean> {
   const result = await requestWithFallback(
-    () => fetch(ENGINE_BRIDGE_HEALTH_ENDPOINT).then(async (response) => {
+    () => fetch(resolveBridgeEndpoint("/__engine/health")).then(async (response) => {
       if (!response.ok) {
         throw new Error(`Engine bridge health HTTP error: ${response.status}`);
       }

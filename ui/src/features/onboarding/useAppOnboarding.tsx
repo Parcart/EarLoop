@@ -11,7 +11,6 @@ type AppOnboardingState = {
   requestedScreen: OnboardingStep["screen"] | null;
   currentTargetRect: OnboardingTargetRect | null;
   currentStepCompleted: boolean;
-  shouldLockAudioSettings: boolean;
   activeTargetId: OnboardingTargetId | null;
   registerTarget: (targetId: OnboardingTargetId, node: HTMLElement | null) => void;
   setActiveTargetId: (targetId: OnboardingTargetId | null) => void;
@@ -47,7 +46,6 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
   const [activeTargetId, setActiveTargetId] = useState<OnboardingTargetId | null>(null);
   const [targetRegistryVersion, setTargetRegistryVersion] = useState(0);
   const targetNodesRef = useRef<Partial<Record<OnboardingTargetId, HTMLElement | null>>>({});
-  const audioSelectionStateRef = useRef({ inputReady: false, outputReady: false });
 
   useEffect(() => {
     setActive(enabled);
@@ -55,13 +53,11 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
       setCurrentIndex(0);
       setCurrentStepCompleted(false);
       setActiveTargetId(null);
-      audioSelectionStateRef.current = { inputReady: false, outputReady: false };
     }
   }, [enabled]);
 
   const currentStep = active ? appOnboardingSteps[currentIndex] ?? null : null;
   const requestedScreen = currentStepCompleted ? (currentStep?.screenAfterCompleted ?? currentStep?.screen ?? null) : (currentStep?.screen ?? null);
-  const shouldLockAudioSettings = active && currentStep?.id === "audio-devices";
 
   const finish = () => {
     setActive(false);
@@ -87,7 +83,6 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
   const skip = () => finish();
 
   const restart = () => {
-    audioSelectionStateRef.current = { inputReady: false, outputReady: false };
     setCurrentStepCompleted(false);
     setActiveTargetId(null);
     setCurrentIndex(0);
@@ -103,15 +98,6 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
   const emitEvent = (event: OnboardingEvent) => {
     if (!active || !currentStep) return;
 
-    if (currentStep.id === "audio-devices") {
-      if (event === "audio.input.changed") audioSelectionStateRef.current.inputReady = true;
-      if (event === "audio.output.changed") audioSelectionStateRef.current.outputReady = true;
-      if (audioSelectionStateRef.current.inputReady && audioSelectionStateRef.current.outputReady) {
-        setCurrentStepCompleted(true);
-      }
-      return;
-    }
-
     if (currentStep.completeOn?.includes(event)) {
       setCurrentStepCompleted(true);
     }
@@ -120,8 +106,7 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
   useEffect(() => {
     if (!active || !currentStep) return;
     setCurrentStepCompleted(
-      currentStep.id === "audio-devices"
-        || (currentStep.type === "info" && !currentStep.completeOn?.length),
+      currentStep.type === "info" && !currentStep.completeOn?.length,
     );
     setActiveTargetId(currentStep.targetId ?? null);
   }, [active, currentStep?.id, currentStep?.type, currentStep?.completeOn]);
@@ -199,7 +184,6 @@ export function useAppOnboarding({ enabled, onComplete }: UseAppOnboardingOption
     requestedScreen,
     currentTargetRect,
     currentStepCompleted,
-    shouldLockAudioSettings,
     activeTargetId,
     registerTarget,
     setActiveTargetId,

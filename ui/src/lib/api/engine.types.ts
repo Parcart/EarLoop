@@ -10,6 +10,7 @@ export type EngineStatus = {
   pipelineCatalog: PipelineCatalog;
   sessionDefaultProfileId: string;
   startupSteps: readonly string[];
+  backendMode?: "real" | "mock" | "unknown" | string;
   audioStatus?: {
     status: "idle" | "applied" | "failed" | "pending_restart" | "device_unavailable" | string;
     activeConfig: EngineConfig["audio"] | null;
@@ -27,7 +28,9 @@ export type EngineStatus = {
     appliedToAudio: boolean;
     applyStatus: string;
     lastError: string | null;
+    diagnostics?: Record<string, unknown>;
   } | null;
+  logPaths?: Record<string, string>;
 };
 
 export type { EngineConfig, EngineDomainState } from "@/lib/storage/engine-storage";
@@ -51,6 +54,7 @@ export type SessionPreviewStatus = {
   appliedToAudio: boolean;
   applyStatus: string;
   lastError: string | null;
+  diagnostics?: Record<string, unknown>;
 };
 
 export type AudioDeviceOption = {
@@ -64,6 +68,9 @@ export type AudioDeviceOption = {
   defaultSampleRate: string | null;
   compatibleDeviceIds?: string[];
   compatibleSampleRates?: string[];
+  supportsLoopback?: boolean | null;
+  loopbackInputDeviceId?: string | null;
+  loopbackEndpointId?: string | null;
 };
 
 export type AudioDevicesCatalog = {

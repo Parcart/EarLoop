@@ -66,4 +66,7 @@ export type AudioDeviceOption = {
   defaultSampleRate: string | null;
   compatibleDeviceIds?: string[];
   compatibleSampleRates?: string[];
+  supportsLoopback?: boolean | null;
+  loopbackInputDeviceId?: string | null;
+  loopbackEndpointId?: string | null;
 };

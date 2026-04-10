@@ -4,9 +4,100 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ui</title>
+    <title>EarLoop</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 52% 46%, rgba(30, 207, 255, 0.34), transparent 18rem),
+          radial-gradient(circle at 49% 68%, rgba(37, 93, 255, 0.26), transparent 16rem),
+          radial-gradient(circle at 65% 48%, rgba(213, 42, 151, 0.24), transparent 12rem),
+          #05060a;
+        color: rgba(255, 255, 255, 0.88);
+        font-family: "Segoe UI", sans-serif;
+      }
+
+      #root {
+        min-height: 100svh;
+      }
+
+      #app-boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 52% 46%, rgba(30, 207, 255, 0.34), transparent 18rem),
+          radial-gradient(circle at 49% 68%, rgba(37, 93, 255, 0.26), transparent 16rem),
+          radial-gradient(circle at 65% 48%, rgba(213, 42, 151, 0.24), transparent 12rem),
+          #05060a;
+        transition: opacity 180ms ease;
+      }
+
+      #app-boot-splash.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .app-boot-splash__loader {
+        display: grid;
+        justify-items: center;
+        gap: 16px;
+      }
+
+      .app-boot-splash__wheel {
+        width: 82px;
+        height: 82px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+        box-shadow: 0 0 36px rgba(30, 207, 255, 0.12);
+        backdrop-filter: blur(10px);
+      }
+
+      .app-boot-splash__wheel::before {
+        content: "";
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        border: 3px solid rgba(255, 255, 255, 0.12);
+        border-top-color: #1ecfff;
+        border-right-color: #d52a97;
+        animation: app-boot-spin 0.9s linear infinite;
+      }
+
+      .app-boot-splash__title {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .app-boot-splash__subtitle {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      @keyframes app-boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="app-boot-splash">
+      <div class="app-boot-splash__loader">
+        <div class="app-boot-splash__wheel"></div>
+        <div class="app-boot-splash__title">EarLoop</div>
+        <div class="app-boot-splash__subtitle">Preparing interface...</div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

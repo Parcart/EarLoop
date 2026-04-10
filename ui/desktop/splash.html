@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EarLoop</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #05060a;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: rgba(255, 255, 255, 0.88);
+        --muted: rgba(255, 255, 255, 0.6);
+        --cyan: #1ecfff;
+        --pink: #d52a97;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 52% 46%, rgba(30, 207, 255, 0.34), transparent 18rem),
+          radial-gradient(circle at 49% 68%, rgba(37, 93, 255, 0.26), transparent 16rem),
+          radial-gradient(circle at 65% 48%, rgba(213, 42, 151, 0.24), transparent 12rem),
+          var(--bg);
+        color: var(--text);
+        font: 14px/1.4 "Segoe UI", sans-serif;
+      }
+
+      body {
+        position: relative;
+        font: 14px/1.4 "Segoe UI", sans-serif;
+      }
+
+      body[data-state="error"] .wheel::before {
+        animation: none;
+        border-top-color: rgba(255, 255, 255, 0.16);
+        border-right-color: rgba(255, 255, 255, 0.16);
+      }
+
+      body[data-state="error"] .app-boot-splash__subtitle {
+        color: #ffb4b4;
+      }
+
+      .shell {
+        display: flex;
+        height: 100%;
+        flex-direction: column;
+      }
+
+      .titlebar {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(0, 0, 0, 0.26);
+        -webkit-app-region: drag;
+      }
+
+      .titlebar__label {
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .content {
+        position: relative;
+        flex: 1;
+        overflow: hidden;
+      }
+
+      .app-boot-splash {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+      }
+
+      .app-boot-splash__loader {
+        display: grid;
+        justify-items: center;
+        gap: 16px;
+        text-align: center;
+      }
+
+      .wheel {
+        width: 82px;
+        height: 82px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+        box-shadow: 0 0 36px rgba(30, 207, 255, 0.12);
+        backdrop-filter: blur(10px);
+      }
+
+      .wheel::before {
+        content: "";
+        width: 38px;
+        height: 38px;
+        border-radius: 999px;
+        border: 3px solid rgba(255, 255, 255, 0.12);
+        border-top-color: var(--cyan);
+        border-right-color: var(--pink);
+        animation: spin 0.9s linear infinite;
+      }
+
+      .app-boot-splash__title {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .app-boot-splash__subtitle {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="titlebar">
+        <div class="titlebar__label">EarLoop</div>
+      </div>
+      <div class="content">
+        <div class="app-boot-splash">
+          <div class="app-boot-splash__loader">
+          <div class="wheel"></div>
+            <div class="app-boot-splash__title" id="splash-title">EarLoop</div>
+            <div class="app-boot-splash__subtitle" id="splash-subtitle">Loading audio runtime...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

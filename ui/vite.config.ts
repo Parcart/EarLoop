@@ -8,6 +8,7 @@ import { earloopEngineBridgePlugin } from "./dev/engine-bridge"
 const packageJson = JSON.parse(readFileSync(path.resolve(__dirname, "./package.json"), "utf-8")) as { version: string }
 
 export default defineConfig({
+  base: "./",
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
   },
@@ -16,5 +17,9 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+  },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
   },
 })

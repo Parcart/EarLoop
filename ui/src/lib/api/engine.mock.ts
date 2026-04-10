@@ -77,6 +77,9 @@ const mockAudioDevices: AudioDevicesCatalog = {
       defaultSampleRate: "48000",
       compatibleDeviceIds: ["mock-input-cable", "mock-input-blackhole"],
       compatibleSampleRates: ["48000", "44100"],
+      supportsLoopback: false,
+      loopbackInputDeviceId: null,
+      loopbackEndpointId: null,
     },
     {
       deviceId: "mock-output-realtek",
@@ -89,6 +92,9 @@ const mockAudioDevices: AudioDevicesCatalog = {
       defaultSampleRate: "48000",
       compatibleDeviceIds: ["mock-input-cable", "mock-input-blackhole"],
       compatibleSampleRates: ["48000", "44100"],
+      supportsLoopback: false,
+      loopbackInputDeviceId: null,
+      loopbackEndpointId: null,
     },
   ],
 };
@@ -107,7 +113,12 @@ function cloneProfiles(profiles: SavedProfile[]): SavedProfile[] {
 
 function cloneEngineConfig(config: EngineConfig): EngineConfig {
   return {
-    audio: { ...config.audio },
+    audio: {
+      ...config.audio,
+      captureSourceType: config.audio.captureSourceType ?? "input",
+      captureDeviceId: config.audio.captureDeviceId ?? config.audio.inputDeviceId,
+      inputDeviceId: config.audio.captureDeviceId ?? config.audio.inputDeviceId,
+    },
     defaults: { ...config.defaults },
     runtime: {
       processingEnabled: config.runtime?.processingEnabled ?? true,
@@ -162,19 +173,20 @@ function applyFeedback(params: PerceptualParams, feedback: string): PerceptualPa
     case "less_harsh":
       return {
         ...params,
-        tilt: Number(clamp(params.tilt - 0.08, -1, 1).toFixed(2)),
-        presence: Number(clamp(params.presence - 0.12, -1, 1).toFixed(2)),
-        air: Number(clamp(params.air - 0.04, -1, 1).toFixed(2)),
-        lowmid: Number(clamp(params.lowmid + 0.06, -1, 1).toFixed(2)),
-        sparkle: Number(clamp(params.sparkle - 0.08, -1, 1).toFixed(2)),
+        tilt: Number(clamp(params.tilt - 0.06, -1, 1).toFixed(2)),
+        presence: Number(clamp(params.presence - 0.10, -1, 1).toFixed(2)),
+        air: Number(clamp(params.air - 0.02, -1, 1).toFixed(2)),
+        lowmid: Number(clamp(params.lowmid + 0.05, -1, 1).toFixed(2)),
+        sparkle: Number(clamp(params.sparkle - 0.06, -1, 1).toFixed(2)),
       };
     case "more_air":
       return {
         ...params,
-        tilt: Number(clamp(params.tilt + 0.03, -1, 1).toFixed(2)),
-        presence: Number(clamp(params.presence + 0.05, -1, 1).toFixed(2)),
-        air: Number(clamp(params.air + 0.14, -1, 1).toFixed(2)),
-        sparkle: Number(clamp(params.sparkle + 0.07, -1, 1).toFixed(2)),
+        tilt: Number(clamp(params.tilt + 0.04, -1, 1).toFixed(2)),
+        presence: Number(clamp(params.presence - 0.06, -1, 1).toFixed(2)),
+        air: Number(clamp(params.air + 0.12, -1, 1).toFixed(2)),
+        lowmid: Number(clamp(params.lowmid - 0.03, -1, 1).toFixed(2)),
+        sparkle: Number(clamp(params.sparkle + 0.08, -1, 1).toFixed(2)),
       };
     case "warmer":
       return {
@@ -243,6 +255,7 @@ function getEngineStatus(): EngineStatus {
     },
     sessionDefaultProfileId: SESSION_DEFAULT_PROFILE_ID,
     startupSteps,
+    backendMode: "mock",
     audioStatus: {
       status: "idle",
       activeConfig: null,
@@ -329,6 +342,9 @@ function updateEngineConfig({ config }: UpdateEngineConfigInput): EngineConfig {
     audio: {
       ...engineDomainState.config.audio,
       ...config.audio,
+      captureSourceType: config.audio?.captureSourceType ?? engineDomainState.config.audio.captureSourceType ?? "input",
+      captureDeviceId: config.audio?.captureDeviceId ?? config.audio?.inputDeviceId ?? engineDomainState.config.audio.captureDeviceId ?? engineDomainState.config.audio.inputDeviceId,
+      inputDeviceId: config.audio?.captureDeviceId ?? config.audio?.inputDeviceId ?? engineDomainState.config.audio.captureDeviceId ?? engineDomainState.config.audio.inputDeviceId,
     },
     defaults: {
       ...engineDomainState.config.defaults,

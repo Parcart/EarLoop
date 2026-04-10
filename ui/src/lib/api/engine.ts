@@ -34,7 +34,10 @@ import type { EngineApi, EngineProviderName } from "@/lib/api/engine.types";
 
 function resolveEngineProviderName(): EngineProviderName {
   const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
-  return viteEnv?.VITE_ENGINE_PROVIDER === "adapter" ? "adapter" : "mock";
+  if (viteEnv?.VITE_ENGINE_PROVIDER === "adapter") return "adapter";
+  if (viteEnv?.VITE_ENGINE_PROVIDER === "mock") return "mock";
+  if (window.earloopDesktop?.isDesktop && window.earloopDesktop.engineBridgeBaseUrl) return "adapter";
+  return "mock";
 }
 
 const providers: Record<EngineProviderName, EngineApi> = {

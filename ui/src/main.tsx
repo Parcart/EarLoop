@@ -8,3 +8,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>
 );
+
+const bootSplash = document.getElementById("app-boot-splash");
+if (bootSplash) {
+  requestAnimationFrame(() => {
+    bootSplash.classList.add("is-hidden");
+    window.setTimeout(() => bootSplash.remove(), 220);
+  });
+}

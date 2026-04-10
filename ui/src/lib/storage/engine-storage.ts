@@ -7,6 +7,8 @@ import {
 import type { SavedProfile } from "@/lib/types/ui";
 
 export type EngineAudioConfig = {
+  captureSourceType: "input" | "render_loopback";
+  captureDeviceId: string;
   inputDeviceId: string;
   outputDeviceId: string;
   sampleRate: string;
@@ -59,6 +61,8 @@ const defaultEngineDomainState: EngineDomainState = {
   })),
   config: {
     audio: {
+      captureSourceType: "input",
+      captureDeviceId: "CABLE Output (VB-Audio Virtual Cable)",
       inputDeviceId: "CABLE Output (VB-Audio Virtual Cable)",
       outputDeviceId: "Динамики (Razer Barracuda X 2.4)",
       sampleRate: "48000",
@@ -83,7 +87,12 @@ function cloneProfiles(profiles: SavedProfile[]): SavedProfile[] {
 
 function cloneEngineConfig(config: EngineConfig): EngineConfig {
   return {
-    audio: { ...config.audio },
+    audio: {
+      ...config.audio,
+      captureSourceType: config.audio.captureSourceType ?? "input",
+      captureDeviceId: config.audio.captureDeviceId ?? config.audio.inputDeviceId,
+      inputDeviceId: config.audio.captureDeviceId ?? config.audio.inputDeviceId,
+    },
     defaults: { ...config.defaults },
     runtime: {
       processingEnabled: config.runtime?.processingEnabled ?? true,
@@ -135,7 +144,13 @@ function sanitizeEngineDomainState(value: unknown): EngineDomainState {
     profiles,
     config: {
       audio: {
-        inputDeviceId: configCandidate?.audio?.inputDeviceId ?? defaultEngineDomainState.config.audio.inputDeviceId,
+        captureSourceType: configCandidate?.audio?.captureSourceType ?? defaultEngineDomainState.config.audio.captureSourceType,
+        captureDeviceId: configCandidate?.audio?.captureDeviceId
+          ?? configCandidate?.audio?.inputDeviceId
+          ?? defaultEngineDomainState.config.audio.captureDeviceId,
+        inputDeviceId: configCandidate?.audio?.captureDeviceId
+          ?? configCandidate?.audio?.inputDeviceId
+          ?? defaultEngineDomainState.config.audio.inputDeviceId,
         outputDeviceId: configCandidate?.audio?.outputDeviceId ?? defaultEngineDomainState.config.audio.outputDeviceId,
         sampleRate: configCandidate?.audio?.sampleRate ?? defaultEngineDomainState.config.audio.sampleRate,
         channels: configCandidate?.audio?.channels ?? defaultEngineDomainState.config.audio.channels,

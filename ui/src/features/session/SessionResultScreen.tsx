@@ -21,6 +21,7 @@ type SessionResultScreenProps = {
   onProfileDraftNameChange: (value: string) => void;
   onSaveProfile: () => void;
   onReturnToSession: () => void;
+  onCancelSession: () => void;
 };
 
 export function SessionResultScreen({
@@ -35,6 +36,7 @@ export function SessionResultScreen({
   onProfileDraftNameChange,
   onSaveProfile,
   onReturnToSession,
+  onCancelSession,
 }: SessionResultScreenProps) {
   return (
     <Card className="rounded-[28px] border border-white/10 bg-[#0b0c11] shadow-none">
@@ -51,7 +53,10 @@ export function SessionResultScreen({
                 <Button className="rounded-2xl bg-cyan-300 text-slate-950 shadow-[0_12px_30px_rgba(56,189,248,0.22)] transition-colors hover:bg-cyan-200 active:bg-cyan-100 md:min-w-[180px]" onClick={onSaveProfile}>Сохранить профиль</Button>
               </div>
               <div className="mt-3">
-                <Button variant="outline" className="rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10" onClick={onReturnToSession}>Вернуться</Button>
+                <div className="flex flex-col gap-3 md:flex-row">
+                  <Button variant="outline" className="rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10" onClick={onReturnToSession}>Вернуться</Button>
+                  <Button variant="outline" className="rounded-2xl border-white/10 bg-white/5 text-white hover:bg-white/10" onClick={onCancelSession}>Отмена</Button>
+                </div>
               </div>
               {saveNotice && <p className="mt-3 text-sm text-cyan-200">{saveNotice}</p>}
             </div>
