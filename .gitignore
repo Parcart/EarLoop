@@ -57,3 +57,7 @@ scripts/data/
 # Optional large local folders
 data/
 datasets/
+
+dist/
+release/
+build/

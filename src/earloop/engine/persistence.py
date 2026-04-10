@@ -75,7 +75,8 @@ def _config_from_dict(payload: dict[str, Any]) -> EngineConfig:
     runtime = payload.get("runtime", {})
     return EngineConfig(
         audio=EngineAudioConfig(
-            input_device_id=str(audio["inputDeviceId"]),
+            capture_source_type=str(audio.get("captureSourceType", "input")),
+            capture_device_id=str(audio.get("captureDeviceId", audio["inputDeviceId"])),
             output_device_id=str(audio["outputDeviceId"]),
             sample_rate=str(audio["sampleRate"]),
             channels=str(audio["channels"]),

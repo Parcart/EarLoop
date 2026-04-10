@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -9,7 +9,7 @@ from earloop.utils.logging_utils import append_jsonl
 from earloop.utils.logging_utils import setup_logger
 
 from .persistence import describe_runtime_paths, resolve_audio_diagnostic_log_path
-from .types import AudioDeviceInfo, AudioDevicesSnapshot, AudioStatusSnapshot, EngineAudioConfig, EngineConfig, PerceptualParams, RuntimeProfileStatusSnapshot, SavedProfile, SessionPreviewStatusSnapshot
+from .types import AudioDeviceInfo, AudioDevicesSnapshot, AudioStatusSnapshot, CaptureSourceType, EngineAudioConfig, EngineConfig, PerceptualParams, RuntimeProfileStatusSnapshot, SavedProfile, SessionPreviewStatusSnapshot
 
 if TYPE_CHECKING:
     from earloop.audio.engine import AudioEngine
@@ -18,12 +18,28 @@ if TYPE_CHECKING:
 AudioApplyState = Literal["idle", "applied", "failed", "pending_restart", "device_unavailable"]
 EQ_BAND_FREQUENCIES = (25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0, 2500.0, 6300.0, 16000.0)
 WASAPI_HOSTAPI_NAME = "Windows WASAPI"
+NATIVE_LOOPBACK_STRATEGY = "windows_loopback_soundcard"
+LOOPBACK_UNSUPPORTED_REASON = "Selected render endpoint does not expose a Windows loopback capture path in the current runtime"
 
 
 def _clone_audio_config(config: EngineAudioConfig | None) -> EngineAudioConfig | None:
     if config is None:
         return None
     return replace(config)
+
+
+@dataclass(slots=True)
+class ResolvedCaptureRoute:
+    capture_source_type: CaptureSourceType
+    capture_strategy: str
+    capture_config_device_id: str
+    capture_runtime_device_id: str
+    capture_runtime_index: int | None
+    output_device_id: str
+    output_index: int
+    capture_label: str
+    capture_runtime_label: str
+    output_label: str
 
 
 class AudioRuntimeController:
@@ -89,15 +105,21 @@ class AudioRuntimeController:
     def _resolve_device_labels(self, config: EngineAudioConfig | None) -> dict[str, str | None]:
         if config is None:
             return {
+                "captureSourceType": None,
+                "captureDeviceId": None,
                 "inputDeviceId": None,
                 "outputDeviceId": None,
+                "captureDeviceLabel": None,
                 "inputDeviceLabel": None,
                 "outputDeviceLabel": None,
             }
         return {
-            "inputDeviceId": config.input_device_id,
+            "captureSourceType": config.capture_source_type,
+            "captureDeviceId": config.capture_device_id,
+            "inputDeviceId": config.capture_device_id,
             "outputDeviceId": config.output_device_id,
-            "inputDeviceLabel": config.input_device_id,
+            "captureDeviceLabel": config.capture_device_id,
+            "inputDeviceLabel": config.capture_device_id,
             "outputDeviceLabel": config.output_device_id,
         }
 
@@ -234,6 +256,12 @@ class AudioRuntimeController:
                     default_sample_rate=default_sample_rate,
                 ))
                 output_indexes_by_id[device_id] = index
+        self._annotate_native_loopback_support(
+            outputs=outputs,
+            devices=devices,
+            hostapis=hostapis,
+            output_indexes_by_id=output_indexes_by_id,
+        )
         self._annotate_wasapi_compatibility(
             inputs=inputs,
             outputs=outputs,
@@ -249,13 +277,15 @@ class AudioRuntimeController:
         desired = _clone_audio_config(config.audio)
         timestamp = datetime.now(timezone.utc).isoformat()
         self._logger.info(
-            "apply_engine_config requested: input=%s output=%s sr=%s ch=%s",
-            desired.input_device_id,
+            "apply_engine_config requested: capture_type=%s capture=%s output=%s sr=%s ch=%s",
+            desired.capture_source_type,
+            desired.capture_device_id,
             desired.output_device_id,
             desired.sample_rate,
             desired.channels,
         )
         audio_engine_cls, passthrough_processor_cls, import_error = self._load_audio_runtime()
+        loopback_engine_cls, loopback_import_error = self._load_windows_loopback_runtime()
 
         if import_error is not None or audio_engine_cls is None or passthrough_processor_cls is None:
             self._logger.error("audio runtime import unavailable: %s", import_error or "Audio runtime is unavailable")
@@ -276,17 +306,32 @@ class AudioRuntimeController:
                 diagnostics=diagnostics,
             )
             return self.get_status()
+        if desired.capture_source_type == "render_loopback" and (loopback_import_error is not None or loopback_engine_cls is None):
+            diagnostics = self._build_common_diagnostics(config=config)
+            diagnostics["loopbackRuntimeImportError"] = loopback_import_error or "Windows loopback runtime is unavailable"
+            self._status = AudioStatusSnapshot(
+                status="failed",
+                active_config=_clone_audio_config(self._status.active_config),
+                desired_config=desired,
+                last_error=loopback_import_error or "Windows loopback runtime is unavailable",
+                last_applied_at=timestamp,
+                diagnostics=diagnostics,
+            )
+            self._write_audio_diagnostic(
+                "apply_engine_config",
+                stage="loopback_runtime_import_failed",
+                desiredConfig=desired.to_dict(),
+                diagnostics=diagnostics,
+            )
+            return self.get_status()
 
         try:
-            input_index = self._resolve_device_index(
-                audio_engine_cls,
-                desired.input_device_id,
-                require_input=True,
-            )
-            output_index = self._resolve_device_index(
-                audio_engine_cls,
-                desired.output_device_id,
-                require_output=True,
+            devices, hostapis = self._load_device_catalog(audio_engine_cls)
+            resolved_route = self._resolve_capture_route(
+                audio_engine_cls=audio_engine_cls,
+                desired=desired,
+                devices=devices,
+                hostapis=hostapis,
             )
         except LookupError as exc:
             self._logger.warning("audio device resolution failed: %s", exc)
@@ -328,22 +373,22 @@ class AudioRuntimeController:
             return self.get_status()
 
         try:
-            devices, hostapis = self._load_device_catalog(audio_engine_cls)
             self._logger.info(
-                "resolved audio devices: input=%s | output=%s",
-                self._describe_device(index=input_index, device=devices[input_index], hostapis=hostapis),
-                self._describe_device(index=output_index, device=devices[output_index], hostapis=hostapis),
+                "resolved audio devices: capture_selected=%s | capture_runtime=%s | output=%s",
+                resolved_route.capture_label,
+                resolved_route.capture_runtime_label,
+                resolved_route.output_label,
             )
             runtime_config, sample_rate_candidates = self._resolve_runtime_audio_config(
                 desired=desired,
                 devices=devices,
                 hostapis=hostapis,
-                input_index=input_index,
-                output_index=output_index,
+                capture_route=resolved_route,
             )
             self._logger.info(
-                "validated sample-rate candidates for input=%s output=%s: %s",
-                desired.input_device_id,
+                "validated sample-rate candidates for capture_type=%s capture=%s output=%s: %s",
+                desired.capture_source_type,
+                desired.capture_device_id,
                 desired.output_device_id,
                 sample_rate_candidates,
             )
@@ -420,16 +465,29 @@ class AudioRuntimeController:
                     samplerate=int(candidate_config.sample_rate),
                     channels=int(candidate_config.channels),
                 )
-                next_engine = audio_engine_cls(
-                    capture_device=input_index,
-                    playback_device=output_index,
-                    samplerate=int(candidate_config.sample_rate),
-                    channels=int(candidate_config.channels),
-                    processor=processor,
-                )
+                if resolved_route.capture_strategy == NATIVE_LOOPBACK_STRATEGY:
+                    next_engine = loopback_engine_cls(
+                        loopback_endpoint_id=resolved_route.capture_runtime_device_id,
+                        playback_device=resolved_route.output_index,
+                        samplerate=int(candidate_config.sample_rate),
+                        channels=int(candidate_config.channels),
+                        processor=processor,
+                    )
+                else:
+                    next_engine = audio_engine_cls(
+                        capture_device=resolved_route.capture_runtime_index,
+                        playback_device=resolved_route.output_index,
+                        samplerate=int(candidate_config.sample_rate),
+                        channels=int(candidate_config.channels),
+                        processor=processor,
+                    )
                 next_engine.start()
                 self._engine = next_engine
-                self._logger.info("audio engine started successfully at %s Hz", candidate_config.sample_rate)
+                self._logger.info(
+                    "audio engine started successfully at %s Hz using strategy=%s",
+                    candidate_config.sample_rate,
+                    resolved_route.capture_strategy,
+                )
                 self._status = AudioStatusSnapshot(
                     status="applied",
                     active_config=candidate_config,
@@ -438,6 +496,7 @@ class AudioRuntimeController:
                     last_applied_at=timestamp,
                     diagnostics={
                         **self._build_common_diagnostics(config=config),
+                        "captureStrategy": resolved_route.capture_strategy,
                         "resolvedSampleRate": candidate_config.sample_rate,
                         "sampleRateCandidates": sample_rate_candidates,
                     },
@@ -467,6 +526,7 @@ class AudioRuntimeController:
             last_applied_at=timestamp,
             diagnostics={
                 **self._build_common_diagnostics(config=config),
+                "captureStrategy": resolved_route.capture_strategy,
                 "sampleRateCandidates": sample_rate_candidates,
             },
         )
@@ -743,6 +803,84 @@ class AudioRuntimeController:
             raise LookupError(f"Configured audio device is unavailable: {configured_device}")
         return resolved
 
+    def _resolve_capture_route(
+        self,
+        *,
+        audio_engine_cls: type[Any],
+        desired: EngineAudioConfig,
+        devices: list[Any],
+        hostapis: list[Any],
+    ) -> ResolvedCaptureRoute:
+        output_index = self._resolve_device_index(
+            audio_engine_cls,
+            desired.output_device_id,
+            require_output=True,
+        )
+        output_label = self._describe_device(index=output_index, device=devices[output_index], hostapis=hostapis)
+
+        if desired.capture_source_type == "input":
+            capture_index = self._resolve_device_index(
+                audio_engine_cls,
+                desired.capture_device_id,
+                require_input=True,
+            )
+            capture_label = self._describe_device(index=capture_index, device=devices[capture_index], hostapis=hostapis)
+            return ResolvedCaptureRoute(
+                capture_source_type="input",
+                capture_strategy="input_sounddevice",
+                capture_config_device_id=desired.capture_device_id,
+                capture_runtime_device_id=str(capture_index),
+                capture_runtime_index=capture_index,
+                output_device_id=desired.output_device_id,
+                output_index=output_index,
+                capture_label=capture_label,
+                capture_runtime_label=capture_label,
+                output_label=output_label,
+            )
+
+        if desired.capture_source_type != "render_loopback":
+            raise ValueError(f"Unsupported capture source type: {desired.capture_source_type}")
+
+        render_index = self._resolve_device_index(
+            audio_engine_cls,
+            desired.capture_device_id,
+            require_output=True,
+        )
+        render_hostapi = self._resolve_hostapi_name(device=devices[render_index], hostapis=hostapis)
+        if not self._is_wasapi_hostapi(render_hostapi):
+            raise ValueError("Render loopback capture requires a Windows WASAPI render endpoint")
+
+        loopback_endpoint_id = self._resolve_loopback_endpoint_id(render_name=str(devices[render_index].get("name", render_index)))
+        render_label = self._describe_device(index=render_index, device=devices[render_index], hostapis=hostapis)
+        return ResolvedCaptureRoute(
+            capture_source_type="render_loopback",
+            capture_strategy=NATIVE_LOOPBACK_STRATEGY,
+            capture_config_device_id=desired.capture_device_id,
+            capture_runtime_device_id=loopback_endpoint_id,
+            capture_runtime_index=None,
+            output_device_id=desired.output_device_id,
+            output_index=output_index,
+            capture_label=render_label,
+            capture_runtime_label=f"loopback:{loopback_endpoint_id}",
+            output_label=output_label,
+        )
+
+    def _resolve_loopback_endpoint_id(
+        self,
+        *,
+        render_name: str,
+    ) -> str:
+        soundcard_runtime, import_error = self._load_soundcard_runtime()
+        if import_error is not None or soundcard_runtime is None:
+            raise LookupError(import_error or LOOPBACK_UNSUPPORTED_REASON)
+        normalized_render_name = self._normalize_loopback_name(render_name)
+        for microphone in soundcard_runtime.all_microphones(include_loopback=True):
+            if not getattr(microphone, "isloopback", False):
+                continue
+            if self._normalize_loopback_name(microphone.name) == normalized_render_name:
+                return str(microphone.id)
+        raise LookupError(LOOPBACK_UNSUPPORTED_REASON)
+
     def _load_device_catalog(self, audio_engine_cls: type[Any]) -> tuple[list[Any], list[Any]]:
         import sounddevice as sd
 
@@ -796,6 +934,39 @@ class AudioRuntimeController:
                     if sample_rate not in output_info.compatible_sample_rates:
                         output_info.compatible_sample_rates.append(sample_rate)
 
+    def _annotate_native_loopback_support(
+        self,
+        *,
+        outputs: list[AudioDeviceInfo],
+        devices: list[Any],
+        hostapis: list[Any],
+        output_indexes_by_id: dict[str, int],
+    ) -> None:
+        soundcard_runtime, import_error = self._load_soundcard_runtime()
+        loopback_ids_by_name: dict[str, str] = {}
+        if import_error is None and soundcard_runtime is not None:
+            for microphone in soundcard_runtime.all_microphones(include_loopback=True):
+                if not getattr(microphone, "isloopback", False):
+                    continue
+                loopback_ids_by_name[self._normalize_loopback_name(microphone.name)] = str(microphone.id)
+        for output_info in outputs:
+            output_info.supports_loopback = False
+            output_info.loopback_input_device_id = None
+            output_info.loopback_endpoint_id = None
+            output_index = output_indexes_by_id.get(output_info.device_id)
+            if output_index is None:
+                continue
+            hostapi_name = self._resolve_hostapi_name(device=devices[output_index], hostapis=hostapis)
+            if not self._is_wasapi_hostapi(hostapi_name):
+                continue
+            endpoint_id = loopback_ids_by_name.get(
+                self._normalize_loopback_name(str(devices[output_index].get("name", output_index))),
+            )
+            if endpoint_id is None:
+                continue
+            output_info.supports_loopback = True
+            output_info.loopback_endpoint_id = endpoint_id
+
     def _find_pair_sample_rates(
         self,
         *,
@@ -813,7 +984,18 @@ class AudioRuntimeController:
         ):
             try:
                 self._validate_settings(
-                    input_index=input_index,
+                    capture_route=ResolvedCaptureRoute(
+                        capture_source_type="input",
+                        capture_strategy="input_sounddevice",
+                        capture_config_device_id=str(input_index),
+                        capture_runtime_device_id=str(input_index),
+                        capture_runtime_index=input_index,
+                        output_device_id=str(output_index),
+                        output_index=output_index,
+                        capture_label=str(input_device.get("name", input_index)),
+                        capture_runtime_label=str(input_device.get("name", input_index)),
+                        output_label=str(output_device.get("name", output_index)),
+                    ),
                     output_index=output_index,
                     samplerate=candidate,
                     channels=channels,
@@ -829,13 +1011,16 @@ class AudioRuntimeController:
         desired: EngineAudioConfig,
         devices: list[Any],
         hostapis: list[Any],
-        input_index: int,
-        output_index: int,
+        capture_route: ResolvedCaptureRoute,
     ) -> tuple[EngineAudioConfig, list[int]]:
-        input_device = devices[input_index]
-        output_device = devices[output_index]
-        input_hostapi = self._resolve_hostapi_name(device=input_device, hostapis=hostapis)
+        output_device = devices[capture_route.output_index]
         output_hostapi = self._resolve_hostapi_name(device=output_device, hostapis=hostapis)
+        if capture_route.capture_source_type == "input":
+            input_device = devices[capture_route.capture_runtime_index]
+            input_hostapi = self._resolve_hostapi_name(device=input_device, hostapis=hostapis)
+        else:
+            input_device = output_device
+            input_hostapi = output_hostapi
         if input_hostapi != output_hostapi:
             raise ValueError(
                 f"Input/output host API mismatch: input={input_hostapi or 'unknown'}, output={output_hostapi or 'unknown'}"
@@ -843,8 +1028,7 @@ class AudioRuntimeController:
 
         requested_sample_rate = self._safe_int(desired.sample_rate)
         sample_rate_candidates = self._build_sample_rate_candidates(
-            input_index=input_index,
-            output_index=output_index,
+            capture_route=capture_route,
             input_device=input_device,
             output_device=output_device,
             requested_sample_rate=requested_sample_rate,
@@ -852,7 +1036,8 @@ class AudioRuntimeController:
         )
         return (
             EngineAudioConfig(
-                input_device_id=desired.input_device_id,
+                capture_source_type=desired.capture_source_type,
+                capture_device_id=desired.capture_device_id,
                 output_device_id=desired.output_device_id,
                 sample_rate=str(sample_rate_candidates[0]),
                 channels=desired.channels,
@@ -860,16 +1045,19 @@ class AudioRuntimeController:
             sample_rate_candidates,
         )
 
-    def _validate_settings(self, *, input_index: int, output_index: int, samplerate: int, channels: int) -> None:
+    def _validate_settings(self, *, capture_route: ResolvedCaptureRoute, output_index: int, samplerate: int, channels: int) -> None:
         import sounddevice as sd
 
-        sd.check_input_settings(device=input_index, samplerate=samplerate, channels=channels)
+        if capture_route.capture_source_type == "input":
+            sd.check_input_settings(device=capture_route.capture_runtime_index, samplerate=samplerate, channels=channels)
+        else:
+            self._check_loopback_settings(loopback_endpoint_id=capture_route.capture_runtime_device_id, samplerate=samplerate, channels=channels)
         sd.check_output_settings(device=output_index, samplerate=samplerate, channels=channels)
 
     def _probe_settings(
         self,
         *,
-        input_index: int,
+        capture_route: ResolvedCaptureRoute,
         output_index: int,
         samplerate: int,
         channels: int,
@@ -882,7 +1070,10 @@ class AudioRuntimeController:
         output_error: str | None = None
 
         try:
-            sd.check_input_settings(device=input_index, samplerate=samplerate, channels=channels)
+            if capture_route.capture_source_type == "input":
+                sd.check_input_settings(device=capture_route.capture_runtime_index, samplerate=samplerate, channels=channels)
+            else:
+                self._check_loopback_settings(loopback_endpoint_id=capture_route.capture_runtime_device_id, samplerate=samplerate, channels=channels)
         except Exception as exc:
             input_ok = False
             input_error = str(exc)
@@ -898,8 +1089,7 @@ class AudioRuntimeController:
     def _build_sample_rate_candidates(
         self,
         *,
-        input_index: int,
-        output_index: int,
+        capture_route: ResolvedCaptureRoute,
         input_device: Any,
         output_device: Any,
         requested_sample_rate: int,
@@ -915,8 +1105,8 @@ class AudioRuntimeController:
         candidate_failures: list[str] = []
         for candidate in candidates:
             input_ok, input_error, output_ok, output_error = self._probe_settings(
-                input_index=input_index,
-                output_index=output_index,
+                capture_route=capture_route,
+                output_index=capture_route.output_index,
                 samplerate=candidate,
                 channels=channels,
             )
@@ -930,25 +1120,27 @@ class AudioRuntimeController:
         if valid_candidates:
             if valid_candidates[0] != requested_sample_rate:
                 self._logger.info(
-                    "sample rate fallback applied: requested=%s resolved=%s input=%s output=%s",
+                    "sample rate fallback applied: requested=%s resolved=%s capture=%s output=%s strategy=%s",
                     requested_sample_rate,
                     valid_candidates[0],
-                    input_index,
-                    output_index,
+                    capture_route.capture_config_device_id,
+                    capture_route.output_device_id,
+                    capture_route.capture_strategy,
                 )
             return valid_candidates
 
         self._logger.warning(
-            "no compatible sample rate for input=%s output=%s channels=%s; candidates=%s; failures=%s",
-            input_index,
-            output_index,
+            "no compatible sample rate for capture=%s output=%s channels=%s strategy=%s; candidates=%s; failures=%s",
+            capture_route.capture_config_device_id,
+            capture_route.output_device_id,
             channels,
+            capture_route.capture_strategy,
             candidates,
             candidate_failures,
         )
 
         raise ValueError(
-            "No compatible sample rate found for the selected WASAPI input/output pair"
+            "No compatible sample rate found for the selected capture/output route"
         )
 
     def _collect_sample_rate_candidates(
@@ -993,6 +1185,26 @@ class AudioRuntimeController:
     def _is_wasapi_hostapi(hostapi_name: str | None) -> bool:
         return hostapi_name == WASAPI_HOSTAPI_NAME
 
+    @staticmethod
+    def _normalize_loopback_name(name: str) -> str:
+        normalized = name.casefold()
+        for token in ("(loopback)", "[loopback]", " loopback"):
+            normalized = normalized.replace(token, "")
+        return " ".join(normalized.split())
+
+    def _check_loopback_settings(self, *, loopback_endpoint_id: str, samplerate: int, channels: int) -> None:
+        try:
+            soundcard_runtime, import_error = self._load_soundcard_runtime()
+            if import_error is not None or soundcard_runtime is None:
+                raise RuntimeError(import_error or LOOPBACK_UNSUPPORTED_REASON)
+            microphone = soundcard_runtime.get_microphone(loopback_endpoint_id, include_loopback=True)
+            if microphone is None or not getattr(microphone, "isloopback", False):
+                raise RuntimeError(LOOPBACK_UNSUPPORTED_REASON)
+            with microphone.recorder(samplerate=samplerate, channels=channels, blocksize=128):
+                return None
+        except Exception as exc:
+            raise RuntimeError(f"Loopback capture is unavailable: {exc}") from exc
+
     def _describe_device(self, *, index: int, device: Any, hostapis: list[Any]) -> str:
         return (
             f"#{index} '{device.get('name', index)}' "
@@ -1009,6 +1221,24 @@ class AudioRuntimeController:
         except Exception as exc:
             return None, None, str(exc)
         return AudioEngine, PassthroughProcessor, None
+
+    def _load_windows_loopback_runtime(self) -> tuple[type[Any] | None, str | None]:
+        if os.name != "nt":
+            return None, "Windows native loopback runtime is only available on Windows"
+        try:
+            from earloop.audio.windows_loopback_engine import WindowsLoopbackAudioEngine
+        except Exception as exc:
+            return None, str(exc)
+        return WindowsLoopbackAudioEngine, None
+
+    def _load_soundcard_runtime(self):
+        if os.name != "nt":
+            return None, "Windows native loopback runtime is only available on Windows"
+        try:
+            import soundcard as sc
+        except Exception as exc:
+            return None, str(exc)
+        return sc, None
 
     def _build_processor_for_config(self, *, passthrough_processor_cls: type[Any], samplerate: int, channels: int) -> Any:
         if not self._processing_enabled or self._pending_eq_profile is None:
@@ -1070,7 +1300,8 @@ class AudioRuntimeController:
         if left is None or right is None:
             return False
         return (
-            left.input_device_id == right.input_device_id
+            left.capture_source_type == right.capture_source_type
+            and left.capture_device_id == right.capture_device_id
             and left.output_device_id == right.output_device_id
             and left.sample_rate == right.sample_rate
             and left.channels == right.channels

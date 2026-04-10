@@ -19,7 +19,7 @@ class EngineCommandRouter:
     audio_runtime: AudioRuntimeController
     logger = setup_logger("earloop.engine-router")
 
-    def _resolve_audio_device_labels(self, input_device_id: str | None, output_device_id: str | None) -> dict[str, str | None]:
+    def _resolve_audio_device_labels(self, capture_device_id: str | None, output_device_id: str | None) -> dict[str, str | None]:
         try:
             catalog = self.audio_runtime.list_audio_devices()
             devices_by_id = {
@@ -29,7 +29,7 @@ class EngineCommandRouter:
         except Exception:
             devices_by_id = {}
         return {
-            "input": devices_by_id.get(input_device_id or "", input_device_id),
+            "capture": devices_by_id.get(capture_device_id or "", capture_device_id),
             "output": devices_by_id.get(output_device_id or "", output_device_id),
         }
 
@@ -37,11 +37,11 @@ class EngineCommandRouter:
         attempted_config = status.desired_config.to_dict() if status.desired_config is not None else None
         fallback_active_config = status.active_config.to_dict() if status.active_config is not None else None
         attempted_labels = self._resolve_audio_device_labels(
-            status.desired_config.input_device_id if status.desired_config is not None else None,
+            status.desired_config.capture_device_id if status.desired_config is not None else None,
             status.desired_config.output_device_id if status.desired_config is not None else None,
         )
         fallback_active_labels = self._resolve_audio_device_labels(
-            status.active_config.input_device_id if status.active_config is not None else None,
+            status.active_config.capture_device_id if status.active_config is not None else None,
             status.active_config.output_device_id if status.active_config is not None else None,
         )
 

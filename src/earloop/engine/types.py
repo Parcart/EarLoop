@@ -26,6 +26,7 @@ CommandName = Literal[
 
 PairKey = Literal["A", "B"]
 ListeningTarget = Literal["base", "A", "B"]
+CaptureSourceType = Literal["input", "render_loopback"]
 
 
 @dataclass(slots=True)
@@ -122,14 +123,21 @@ class PairData:
 
 @dataclass(slots=True)
 class EngineAudioConfig:
-    input_device_id: str
+    capture_source_type: CaptureSourceType
+    capture_device_id: str
     output_device_id: str
     sample_rate: str
     channels: str
 
+    @property
+    def input_device_id(self) -> str:
+        return self.capture_device_id
+
     def to_dict(self) -> dict[str, str]:
         return {
-            "inputDeviceId": self.input_device_id,
+            "captureSourceType": self.capture_source_type,
+            "captureDeviceId": self.capture_device_id,
+            "inputDeviceId": self.capture_device_id,
             "outputDeviceId": self.output_device_id,
             "sampleRate": self.sample_rate,
             "channels": self.channels,
@@ -148,6 +156,9 @@ class AudioDeviceInfo:
     default_sample_rate: str | None = None
     compatible_device_ids: list[str] = field(default_factory=list)
     compatible_sample_rates: list[str] = field(default_factory=list)
+    supports_loopback: bool | None = None
+    loopback_input_device_id: str | None = None
+    loopback_endpoint_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -161,6 +172,9 @@ class AudioDeviceInfo:
             "defaultSampleRate": self.default_sample_rate,
             "compatibleDeviceIds": list(self.compatible_device_ids),
             "compatibleSampleRates": list(self.compatible_sample_rates),
+            "supportsLoopback": self.supports_loopback,
+            "loopbackInputDeviceId": self.loopback_input_device_id,
+            "loopbackEndpointId": self.loopback_endpoint_id,
         }
 
 

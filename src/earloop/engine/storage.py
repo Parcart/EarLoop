@@ -93,7 +93,8 @@ def _default_profile_params() -> PerceptualParams:
 
 def _default_audio_config() -> EngineAudioConfig:
     return EngineAudioConfig(
-        input_device_id="CABLE Output (VB-Audio Virtual Cable)",
+        capture_source_type="input",
+        capture_device_id="CABLE Output (VB-Audio Virtual Cable)",
         output_device_id="Динамики (Razer Barracuda X 2.4)",
         sample_rate="48000",
         channels="2",
@@ -325,7 +326,7 @@ def _is_mock_device_id(device_id: str) -> bool:
 
 
 def _contains_mock_audio_devices(config: EngineAudioConfig) -> bool:
-    return _is_mock_device_id(config.input_device_id) or _is_mock_device_id(config.output_device_id)
+    return _is_mock_device_id(config.capture_device_id) or _is_mock_device_id(config.output_device_id)
 
 
 class InMemoryEngineStorage:
@@ -348,7 +349,7 @@ class InMemoryEngineStorage:
             if _is_strict_desktop_mode() and _contains_mock_audio_devices(persisted_config.audio):
                 self._logger.error(
                     "mock device ids found in persisted config for strict desktop mode; resetting audio config: input=%s output=%s",
-                    persisted_config.audio.input_device_id,
+                    persisted_config.audio.capture_device_id,
                     persisted_config.audio.output_device_id,
                 )
                 persisted_config.audio = _default_audio_config()
@@ -481,7 +482,8 @@ class InMemoryEngineStorage:
 
         next_config = EngineConfig(
             audio=EngineAudioConfig(
-                input_device_id=str(audio_payload.get("inputDeviceId", current.audio.input_device_id)),
+                capture_source_type=str(audio_payload.get("captureSourceType", current.audio.capture_source_type)),
+                capture_device_id=str(audio_payload.get("captureDeviceId", audio_payload.get("inputDeviceId", current.audio.capture_device_id))),
                 output_device_id=str(audio_payload.get("outputDeviceId", current.audio.output_device_id)),
                 sample_rate=str(audio_payload.get("sampleRate", current.audio.sample_rate)),
                 channels=str(audio_payload.get("channels", current.audio.channels)),
@@ -492,7 +494,7 @@ class InMemoryEngineStorage:
         if _is_strict_desktop_mode() and _contains_mock_audio_devices(next_config.audio):
             self._logger.error(
                 "blocked mock audio config in strict desktop mode: input=%s output=%s",
-                next_config.audio.input_device_id,
+                next_config.audio.capture_device_id,
                 next_config.audio.output_device_id,
             )
             raise ValueError("Mock audio device ids are not allowed in packaged desktop mode")
