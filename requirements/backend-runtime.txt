@@ -1,0 +1,7 @@
+numpy==2.3.5
+scipy==1.16.3
+pandas==2.3.3
+sounddevice==0.5.3
+soundfile==0.13.1
+soundcard==0.4.5
+colorama==0.4.6
