@@ -30,6 +30,9 @@ export type EngineStatus = {
     lastError: string | null;
     diagnostics?: Record<string, unknown>;
   } | null;
+  domainWorkerStatus?: Record<string, unknown>;
+  mlDomainWorkerStatus?: Record<string, unknown>;
+  audioBridgeWorkerStatus?: Record<string, unknown>;
   logPaths?: Record<string, string>;
 };
 
@@ -41,6 +44,9 @@ export type MainRuntimeState = {
   activeProfileName: string | null;
   audioStatus?: EngineStatus["audioStatus"];
   runtimeProfileStatus?: EngineStatus["runtimeProfileStatus"];
+  domainWorkerStatus?: Record<string, unknown>;
+  mlDomainWorkerStatus?: Record<string, unknown>;
+  audioBridgeWorkerStatus?: Record<string, unknown>;
 };
 
 export type SessionPreviewStatus = {

@@ -5,9 +5,9 @@ import type {
   CreateSessionInput,
   DeleteProfileInput,
   EngineApi,
+  EngineBridgeTransport,
   EngineConfig,
   EngineDomainState,
-  EngineBridgeTransport,
   EngineStatus,
   EngineTransportCommand,
   EngineTransportRequest,
@@ -27,17 +27,8 @@ import type {
 } from "@/lib/api/engine.types";
 import type { SavedProfile } from "@/lib/types/ui";
 
-function resolveBridgeBaseUrl(): string {
-  return window.earloopDesktop?.engineBridgeBaseUrl ?? "";
-}
-
-function isDesktopBridgeMode(): boolean {
-  return Boolean(window.earloopDesktop?.isDesktop && resolveBridgeBaseUrl());
-}
-
-function resolveBridgeEndpoint(pathname: string): string {
-  const baseUrl = resolveBridgeBaseUrl();
-  return baseUrl ? `${baseUrl}${pathname}` : pathname;
+function resolveDesktopController() {
+  return window.earloopDesktop?.controller ?? null;
 }
 
 type SyncBridgeTransport = EngineBridgeTransport & {
@@ -46,12 +37,15 @@ type SyncBridgeTransport = EngineBridgeTransport & {
   ) => EngineTransportResponse<TCommand>;
 };
 
-function parseBridgeResponse<TCommand extends EngineTransportCommand>(raw: string): EngineTransportResponse<TCommand> {
-  const payload = JSON.parse(raw) as EngineTransportResponse<TCommand>;
-  if (typeof payload !== "object" || payload === null || typeof payload.ok !== "boolean") {
-    throw new Error("Engine bridge returned invalid response");
+function isDesktopBridgeMode(): boolean {
+  return Boolean(window.earloopDesktop?.isDesktop && resolveDesktopController()?.isAvailable);
+}
+
+function resolveHttpBridgeBaseUrl(): string | null {
+  if (typeof window === "undefined" || !window.location) {
+    return null;
   }
-  return payload;
+  return window.location.origin;
 }
 
 function reportTransportIssue(command: EngineTransportCommand, error: string, fallbackUsed: boolean) {
@@ -66,11 +60,42 @@ function reportTransportIssue(command: EngineTransportCommand, error: string, fa
   window.dispatchEvent(new CustomEvent("earloop:transport-error", { detail }));
 }
 
-function createHttpEngineTransport(): SyncBridgeTransport {
+function createDesktopControllerTransport(): SyncBridgeTransport {
   return {
     async request<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
-      const endpoint = resolveBridgeEndpoint("/__engine/command");
-      const response = await fetch(endpoint, {
+      const controller = resolveDesktopController();
+      if (!controller) {
+        return {
+          ok: false,
+          error: "Desktop controller is not connected",
+        };
+      }
+      return controller.sendCommand(message.command, message.payload) as Promise<EngineTransportResponse<TCommand>>;
+    },
+    requestSync<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
+      const controller = resolveDesktopController();
+      if (!controller) {
+        return {
+          ok: false,
+          error: "Desktop controller is not connected",
+        };
+      }
+      return controller.sendCommandSync(message.command, message.payload) as EngineTransportResponse<TCommand>;
+    },
+  };
+}
+
+function createHttpBridgeTransport(): SyncBridgeTransport {
+  return {
+    async request<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
+      const baseUrl = resolveHttpBridgeBaseUrl();
+      if (!baseUrl) {
+        return {
+          ok: false,
+          error: "HTTP engine bridge is unavailable",
+        };
+      }
+      const response = await fetch(`${baseUrl}/__engine/command`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -80,35 +105,45 @@ function createHttpEngineTransport(): SyncBridgeTransport {
           payload: message.payload,
         }),
       });
-
       if (!response.ok) {
         return {
           ok: false,
-          error: `Engine bridge HTTP error: ${response.status}`,
+          error: `HTTP engine bridge error: ${response.status}`,
         };
       }
-
-      return parseBridgeResponse<TCommand>(await response.text());
+      return await response.json() as EngineTransportResponse<TCommand>;
     },
     requestSync<TCommand extends EngineTransportCommand>(message: EngineTransportRequest<TCommand>) {
+      const baseUrl = resolveHttpBridgeBaseUrl();
+      if (!baseUrl) {
+        return {
+          ok: false,
+          error: "HTTP engine bridge is unavailable",
+        };
+      }
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", resolveBridgeEndpoint("/__engine/command"), false);
+      xhr.open("POST", `${baseUrl}/__engine/command`, false);
       xhr.setRequestHeader("Content-Type", "application/json");
       xhr.send(JSON.stringify({
         command: message.command,
         payload: message.payload,
       }));
-
       if (xhr.status < 200 || xhr.status >= 300) {
         return {
           ok: false,
-          error: `Engine bridge HTTP error: ${xhr.status}`,
+          error: `HTTP engine bridge error: ${xhr.status}`,
         };
       }
-
-      return parseBridgeResponse<TCommand>(xhr.responseText);
+      return JSON.parse(xhr.responseText) as EngineTransportResponse<TCommand>;
     },
   };
+}
+
+function createDefaultTransport(): SyncBridgeTransport {
+  if (isDesktopBridgeMode()) {
+    return createDesktopControllerTransport();
+  }
+  return createHttpBridgeTransport();
 }
 
 function createStubEngineTransport(): SyncBridgeTransport {
@@ -153,7 +188,7 @@ function callTransportSync<TResponse>(
 }
 
 export function createEngineAdapter(
-  transport: SyncBridgeTransport = createHttpEngineTransport(),
+  transport: SyncBridgeTransport = createDefaultTransport(),
   fallback: EngineApi = mockEngineApi,
 ): EngineApi {
   return {
@@ -235,23 +270,20 @@ export function createEngineAdapter(
   };
 }
 
-export const engineAdapterTransport = createHttpEngineTransport();
+export const engineAdapterTransport = createDefaultTransport();
 export const adapterEngineApi = createEngineAdapter(engineAdapterTransport);
 
 export async function probeEngineAdapter(): Promise<boolean> {
+  const controller = resolveDesktopController();
+  if (!controller) {
+    return false;
+  }
   const result = await requestWithFallback(
-    () => fetch(resolveBridgeEndpoint("/__engine/health")).then(async (response) => {
-      if (!response.ok) {
-        throw new Error(`Engine bridge health HTTP error: ${response.status}`);
-      }
-      const payload = await response.json() as { ok?: boolean };
-      if (!payload.ok) {
-        throw new Error("Engine bridge health check failed");
-      }
-      return true;
-    }),
+    () => controller.probe(),
     () => false,
   );
 
   return result;
 }
+
+export { createStubEngineTransport };

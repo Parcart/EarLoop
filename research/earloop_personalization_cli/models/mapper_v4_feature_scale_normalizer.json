@@ -1,0 +1,47 @@
+{
+  "center": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "scale": [
+    8.0,
+    7.0,
+    3.0,
+    3.0,
+    2.5,
+    3.5,
+    6.0,
+    4.0
+  ],
+  "clip_value": 2.0,
+  "feature_names": [
+    "sub_bass",
+    "bass",
+    "lowmid",
+    "warmth",
+    "presence",
+    "clarity",
+    "air",
+    "brightness"
+  ],
+  "fit_info": {
+    "method": "contract_db",
+    "extreme_db": {
+      "sub_bass": 16.0,
+      "bass": 14.0,
+      "lowmid": 6.0,
+      "warmth": 6.0,
+      "presence": 5.0,
+      "clarity": 7.0,
+      "air": 12.0,
+      "brightness": 8.0
+    },
+    "meaning": "raw weighted feature dB divided by extreme_db/2; z=2 means an explicit extreme dB value, not a dataset percentile"
+  }
+}

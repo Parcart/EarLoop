@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 import sys
-import venv
-import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -13,24 +14,81 @@ UI_DIR = ROOT / "ui"
 DESKTOP_DIR = UI_DIR / "desktop"
 DIST_DIR = ROOT / "dist"
 RELEASE_DIR = ROOT / "release"
+REQUIREMENTS_DIR = ROOT / "requirements"
 
 BACKEND_DIST_DIR = DIST_DIR / "backend"
 DESKTOP_DIST_DIR = DIST_DIR / "desktop"
 DRIVER_DIST_DIR = DIST_DIR / "driver"
-REQUIREMENTS_DIR = ROOT / "requirements"
-BACKEND_RUNTIME_REQUIREMENTS = REQUIREMENTS_DIR / "backend-runtime.txt"
-BACKEND_BUILD_REQUIREMENTS = REQUIREMENTS_DIR / "backend-build.txt"
-BUILD_VENV_DIR = ROOT / ".venv-build"
-
 PYINSTALLER_BUILD_DIR = ROOT / "build" / "pyinstaller"
 DESKTOP_BACKEND_STAGING_DIR = DESKTOP_DIR / "backend"
 
 FINAL_DIR = RELEASE_DIR / "EarLoop-TestBuild"
 FINAL_ZIP_BASE = RELEASE_DIR / "EarLoop-TestBuild"
 
-RUN_SERVER_PY = ROOT / "run_server.py"
-BACKEND_EXE = BACKEND_DIST_DIR / "run_server.exe"
-BUILD_PYTHON_ENV_VAR = "EARLOOP_BUILD_PYTHON"
+LEGACY_BUILD_VENV_DIR = ROOT / ".venv-build"
+
+
+@dataclass(frozen=True, slots=True)
+class BuildTarget:
+    key: str
+    label: str
+    dist_name: str
+    entrypoint: Path
+    runtime_requirements: Path
+    build_requirements: Path
+    build_venv_dir: Path
+    preferred_python_version: str
+    build_python_env_var: str
+    sanity_modules: tuple[str, ...]
+
+    @property
+    def bundle_dir(self) -> Path:
+        return BACKEND_DIST_DIR / self.dist_name
+
+    @property
+    def exe_path(self) -> Path:
+        return self.bundle_dir / f"{self.dist_name}.exe"
+
+    @property
+    def desktop_stage_dir(self) -> Path:
+        return DESKTOP_BACKEND_STAGING_DIR / self.dist_name
+
+    @property
+    def desktop_stage_exe(self) -> Path:
+        return self.desktop_stage_dir / f"{self.dist_name}.exe"
+
+    @property
+    def pyinstaller_work_dir(self) -> Path:
+        return PYINSTALLER_BUILD_DIR / self.dist_name
+
+
+ML_TARGET = BuildTarget(
+    key="ml_domain_worker",
+    label="ML/Domain Worker",
+    dist_name="ml_domain_worker",
+    entrypoint=ROOT / "run_ml_domain_worker.py",
+    runtime_requirements=REQUIREMENTS_DIR / "ml-runtime.txt",
+    build_requirements=REQUIREMENTS_DIR / "ml-build.txt",
+    build_venv_dir=ROOT / ".venv-build-ml311",
+    preferred_python_version="3.11",
+    build_python_env_var="EARLOOP_ML_BUILD_PYTHON",
+    sanity_modules=("numpy", "colorama", "PyInstaller"),
+)
+
+AUDIO_TARGET = BuildTarget(
+    key="audio_bridge_worker",
+    label="Audio Bridge Worker",
+    dist_name="audio_bridge_worker",
+    entrypoint=ROOT / "run_audio_bridge_worker.py",
+    runtime_requirements=REQUIREMENTS_DIR / "audio-runtime.txt",
+    build_requirements=REQUIREMENTS_DIR / "audio-build.txt",
+    build_venv_dir=ROOT / ".venv-build-audio314",
+    preferred_python_version="3.14",
+    build_python_env_var="EARLOOP_AUDIO_BUILD_PYTHON",
+    sanity_modules=("numpy", "scipy", "sounddevice", "soundfile", "soundcard", "colorama", "PyInstaller"),
+)
+
+BUILD_TARGETS = (ML_TARGET, AUDIO_TARGET)
 
 README_TEXT = r"""EarLoop — тестовый билд
 
@@ -72,6 +130,18 @@ README_TEXT = r"""EarLoop — тестовый билд
 """
 
 
+def run(cmd: list[str], cwd: Path | None = None) -> None:
+    pretty_cwd = str(cwd or ROOT)
+    print(f"\n>>> [{pretty_cwd}] {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=cwd or ROOT)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def find_running_processes_for_path(path: Path) -> list[tuple[int, str]]:
     if sys.platform != "win32":
         return []
@@ -94,8 +164,6 @@ def find_running_processes_for_path(path: Path) -> list[tuple[int, str]]:
         return []
 
     try:
-        import json
-
         payload = json.loads(result.stdout)
     except Exception:
         return []
@@ -116,20 +184,12 @@ def ensure_executable_is_not_running(path: Path) -> None:
     processes = find_running_processes_for_path(path)
     if not processes:
         return
-
     process_list = ", ".join(f"{name} (PID {pid})" for pid, name in processes)
     raise RuntimeError(
         f"Файл занят запущенным процессом: {path}\n"
         f"Сейчас используют: {process_list}\n"
-        "Закройте приложение EarLoop и все процессы run_server.exe, затем повторите сборку."
+        "Закройте приложение EarLoop и worker-процессы, затем повторите сборку."
     )
-
-def run(cmd: list[str], cwd: Path | None = None) -> None:
-    pretty_cwd = str(cwd or ROOT)
-    print(f"\n>>> [{pretty_cwd}] {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd or ROOT)
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
 
 
 def remove_path(path: Path) -> None:
@@ -138,68 +198,6 @@ def remove_path(path: Path) -> None:
     elif path.exists():
         ensure_executable_is_not_running(path)
         path.unlink()
-
-
-def ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def resolve_managed_build_python() -> Path:
-    return BUILD_VENV_DIR / "Scripts" / "python.exe" if sys.platform == "win32" else BUILD_VENV_DIR / "bin" / "python"
-
-
-def resolve_build_python() -> Path:
-    override_value = os.environ.get(BUILD_PYTHON_ENV_VAR, "").strip()
-    if override_value:
-        override_python = Path(override_value)
-        return override_python
-    return resolve_managed_build_python()
-
-
-def ensure_requirements_files_exist() -> None:
-    missing_files = [path for path in (BACKEND_RUNTIME_REQUIREMENTS, BACKEND_BUILD_REQUIREMENTS) if not path.exists()]
-    if missing_files:
-        missing = ", ".join(str(path) for path in missing_files)
-        raise FileNotFoundError(f"Не найдены requirements-файлы для backend packaging: {missing}")
-
-
-def ensure_build_venv(build_python: Path) -> None:
-    if build_python.exists():
-        return
-    print(f"== Creating backend packaging environment at {BUILD_VENV_DIR} ==")
-    builder = venv.EnvBuilder(with_pip=True, clear=False, upgrade_deps=False)
-    builder.create(BUILD_VENV_DIR)
-    if not build_python.exists():
-        raise FileNotFoundError(f"Не удалось создать packaging interpreter: {build_python}")
-
-
-def install_backend_packaging_requirements(build_python: Path) -> None:
-    ensure_requirements_files_exist()
-    print(f"== Using backend packaging interpreter: {build_python} ==")
-    print("== Upgrading packaging pip ==")
-    run([str(build_python), "-m", "pip", "install", "--upgrade", "pip"])
-    print("== Installing backend runtime requirements ==")
-    run([str(build_python), "-m", "pip", "install", "-r", str(BACKEND_RUNTIME_REQUIREMENTS)])
-    print("== Installing backend build requirements ==")
-    run([str(build_python), "-m", "pip", "install", "-r", str(BACKEND_BUILD_REQUIREMENTS)])
-
-
-def run_backend_dependency_sanity_check(build_python: Path) -> None:
-    print("== Running backend dependency sanity check ==")
-    sanity_script = (
-        "import importlib\n"
-        "required = ['soundcard', 'sounddevice', 'soundfile', 'numpy', 'scipy', 'pandas', 'PyInstaller']\n"
-        "missing = []\n"
-        "for name in required:\n"
-        "    try:\n"
-        "        importlib.import_module(name)\n"
-        "    except Exception as exc:\n"
-        "        missing.append(f'{name}: {exc}')\n"
-        "if missing:\n"
-        "    raise SystemExit('Missing critical backend packaging deps: ' + '; '.join(missing))\n"
-        "print('Backend packaging deps OK')\n"
-    )
-    run([str(build_python), "-c", sanity_script])
 
 
 def copy_tree_contents(source: Path, destination: Path) -> None:
@@ -223,9 +221,152 @@ def find_desktop_exe() -> Path:
             f"Не найден desktop exe в {DESKTOP_DIST_DIR}. "
             "Проверь electron-builder output."
         )
-    # Берем самый свежий по времени изменения
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def read_python_version(python_executable: Path) -> str:
+    result = subprocess.run(
+        [str(python_executable), "-c", "import sys; print(sys.version.split()[0])"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Не удалось определить версию Python для {python_executable}: {result.stderr.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def is_expected_python_version(python_executable: Path, expected_prefix: str) -> bool:
+    try:
+        version = read_python_version(python_executable)
+    except Exception:
+        return False
+    return version.startswith(expected_prefix)
+
+
+def resolve_managed_build_python(target: BuildTarget) -> Path:
+    scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
+    return target.build_venv_dir / scripts_dir / ("python.exe" if sys.platform == "win32" else "python")
+
+
+def resolve_system_python_for_version(version: str) -> Path:
+    if sys.platform == "win32":
+        launcher = shutil.which("py")
+        if launcher:
+            result = subprocess.run(
+                [launcher, f"-{version}", "-c", "import sys; print(sys.executable)"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return Path(result.stdout.strip())
+        raise FileNotFoundError(
+            f"Не удалось найти системный Python {version} через launcher 'py'."
+        )
+
+    for candidate in (
+        Path(shutil.which(f"python{version}") or ""),
+        Path(shutil.which("python3") or ""),
+        Path(shutil.which("python") or ""),
+    ):
+        if candidate and candidate.exists() and is_expected_python_version(candidate, version):
+            return candidate
+
+    raise FileNotFoundError(f"Не удалось найти системный Python {version}.")
+
+
+def resolve_build_python(target: BuildTarget) -> Path:
+    override_value = os.environ.get(target.build_python_env_var, "").strip()
+    if override_value:
+        return Path(override_value)
+    return resolve_managed_build_python(target)
+
+
+def ensure_requirements_files_exist(target: BuildTarget) -> None:
+    missing_files = [path for path in (target.runtime_requirements, target.build_requirements) if not path.exists()]
+    if missing_files:
+        missing = ", ".join(str(path) for path in missing_files)
+        raise FileNotFoundError(f"Не найдены requirements-файлы для {target.label}: {missing}")
+
+
+def ensure_build_venv(target: BuildTarget, build_python: Path) -> None:
+    if build_python != resolve_managed_build_python(target):
+        if not build_python.exists():
+            raise FileNotFoundError(
+                f"Interpreter from {target.build_python_env_var} not found: {build_python}"
+            )
+        version = read_python_version(build_python)
+        print(f"== using {target.label} packaging interpreter: {build_python} (Python {version}) ==")
+        if not version.startswith(target.preferred_python_version):
+            raise RuntimeError(
+                f"{target.label} override interpreter has wrong version: expected {target.preferred_python_version}, got {version}"
+            )
+        return
+
+    system_python = resolve_system_python_for_version(target.preferred_python_version)
+    recreate = False
+    if build_python.exists():
+        current_version = read_python_version(build_python)
+        if not current_version.startswith(target.preferred_python_version):
+            print(
+                f"== recreating {target.label} packaging env: "
+                f"found Python {current_version}, need {target.preferred_python_version} =="
+            )
+            recreate = True
+    elif target.build_venv_dir.exists():
+        recreate = True
+
+    if recreate:
+        remove_path(target.build_venv_dir)
+
+    if build_python.exists():
+        print(f"== reusing {target.label} packaging env: {build_python} (Python {read_python_version(build_python)}) ==")
+        return
+
+    print(f"== creating {target.label} packaging env with Python {target.preferred_python_version} ==")
+    run([str(system_python), "-m", "venv", str(target.build_venv_dir)])
+    created_version = read_python_version(build_python)
+    if not created_version.startswith(target.preferred_python_version):
+        raise RuntimeError(
+            f"{target.label} packaging env created with wrong Python version: expected {target.preferred_python_version}, got {created_version}"
+        )
+
+
+def install_packaging_requirements(target: BuildTarget, build_python: Path) -> None:
+    ensure_requirements_files_exist(target)
+    print(
+        f"== using {target.label} packaging interpreter: {build_python} "
+        f"(Python {read_python_version(build_python)}) =="
+    )
+    run([str(build_python), "-m", "pip", "install", "--upgrade", "pip"])
+    run([str(build_python), "-m", "pip", "install", "-r", str(target.runtime_requirements)])
+    run([str(build_python), "-m", "pip", "install", "-r", str(target.build_requirements)])
+
+
+def run_dependency_sanity_check(target: BuildTarget, build_python: Path) -> None:
+    modules = ", ".join(repr(module) for module in target.sanity_modules)
+    sanity_script = (
+        "import importlib, sys\n"
+        f"required = [{modules}]\n"
+        "missing = []\n"
+        "for name in required:\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except Exception as exc:\n"
+        "        missing.append(f'{name}: {exc}')\n"
+        "if missing:\n"
+        "    raise SystemExit('Missing critical packaging deps: ' + '; '.join(missing))\n"
+        "print('Packaging deps OK')\n"
+        "print('Packaging Python version:', sys.version.split()[0])\n"
+    )
+    print(f"== running {target.label} dependency sanity check ==")
+    run([str(build_python), "-c", sanity_script])
 
 
 def clean() -> None:
@@ -235,7 +376,8 @@ def clean() -> None:
     remove_path(FINAL_DIR)
     remove_path(FINAL_ZIP_BASE.with_suffix(".zip"))
     remove_path(PYINSTALLER_BUILD_DIR)
-    remove_path(DESKTOP_BACKEND_STAGING_DIR / "run_server.exe")
+    remove_path(DESKTOP_BACKEND_STAGING_DIR)
+    remove_path(LEGACY_BUILD_VENV_DIR)
 
 
 def build_ui() -> None:
@@ -243,50 +385,54 @@ def build_ui() -> None:
     run(["npm.cmd", "run", "build"], cwd=UI_DIR)
 
 
-def build_backend() -> None:
-    print("== Building backend exe ==")
+def build_worker_target(target: BuildTarget) -> None:
+    print(f"== Building {target.label} ==")
     ensure_dir(BACKEND_DIST_DIR)
-    ensure_dir(PYINSTALLER_BUILD_DIR)
-    ensure_executable_is_not_running(BACKEND_EXE)
-    build_python = resolve_build_python()
-    if build_python == resolve_managed_build_python():
-        ensure_build_venv(build_python)
-    elif not build_python.exists():
-        raise FileNotFoundError(
-            f"Interpreter from {BUILD_PYTHON_ENV_VAR} not found: {build_python}"
-        )
-    install_backend_packaging_requirements(build_python)
-    run_backend_dependency_sanity_check(build_python)
+    ensure_dir(target.pyinstaller_work_dir)
+    ensure_executable_is_not_running(target.exe_path)
 
-    print("== Running PyInstaller with backend packaging interpreter ==")
+    build_python = resolve_build_python(target)
+    ensure_build_venv(target, build_python)
+    install_packaging_requirements(target, build_python)
+    run_dependency_sanity_check(target, build_python)
+
     run(
         [
             str(build_python),
             "-m",
             "PyInstaller",
-            str(RUN_SERVER_PY),
-            "--onefile",
+            str(target.entrypoint),
+            "--noconfirm",
             "--distpath",
             str(BACKEND_DIST_DIR),
             "--workpath",
-            str(PYINSTALLER_BUILD_DIR),
+            str(target.pyinstaller_work_dir),
             "--specpath",
-            str(PYINSTALLER_BUILD_DIR),
+            str(target.pyinstaller_work_dir),
+            "--paths",
+            str(ROOT / "src"),
             "--name",
-            "run_server",
+            target.dist_name,
         ],
         cwd=ROOT,
     )
 
-    if not BACKEND_EXE.exists():
-        raise FileNotFoundError(f"Не найден backend exe: {BACKEND_EXE}")
+    if not target.bundle_dir.is_dir():
+        raise FileNotFoundError(f"Не найдена bundle directory для {target.label}: {target.bundle_dir}")
+    if not target.exe_path.exists():
+        raise FileNotFoundError(f"Не найден exe для {target.label}: {target.exe_path}")
 
 
 def stage_backend_for_electron() -> None:
-    print("== Staging backend for Electron ==")
+    print("== Staging backend workers for Electron ==")
+    remove_path(DESKTOP_BACKEND_STAGING_DIR)
     ensure_dir(DESKTOP_BACKEND_STAGING_DIR)
-    ensure_executable_is_not_running(DESKTOP_BACKEND_STAGING_DIR / "run_server.exe")
-    shutil.copy2(BACKEND_EXE, DESKTOP_BACKEND_STAGING_DIR / "run_server.exe")
+    for target in BUILD_TARGETS:
+        shutil.copytree(target.bundle_dir, target.desktop_stage_dir, dirs_exist_ok=True)
+        if not target.desktop_stage_exe.exists():
+            raise FileNotFoundError(
+                f"Не найден staged exe для {target.label}: {target.desktop_stage_exe}"
+            )
 
 
 def build_desktop() -> None:
@@ -299,15 +445,12 @@ def create_final_package() -> Path:
     print("== Creating final tester package ==")
     ensure_dir(RELEASE_DIR)
     ensure_dir(FINAL_DIR)
-    ensure_dir(FINAL_DIR / "backend")
     ensure_dir(FINAL_DIR / "data")
     ensure_dir(FINAL_DIR / "logs")
     ensure_dir(FINAL_DIR / "drivers")
 
     desktop_exe = find_desktop_exe()
     shutil.copy2(desktop_exe, FINAL_DIR / "EarLoop.exe")
-    ensure_executable_is_not_running(FINAL_DIR / "backend" / "run_server.exe")
-    shutil.copy2(BACKEND_EXE, FINAL_DIR / "backend" / "run_server.exe")
     copy_tree_contents(DRIVER_DIST_DIR, FINAL_DIR / "drivers")
 
     readme_path = FINAL_DIR / "README.txt"
@@ -325,15 +468,25 @@ def create_final_package() -> Path:
 def main() -> None:
     print(f"Project root: {ROOT}")
     print(f"Requirements dir: {REQUIREMENTS_DIR}")
+    for target in BUILD_TARGETS:
+        print(
+            f"{target.label}: preferred Python {target.preferred_python_version}, "
+            f"env var override {target.build_python_env_var}"
+        )
+
     clean()
     build_ui()
-    build_backend()
+    for target in BUILD_TARGETS:
+        build_worker_target(target)
     stage_backend_for_electron()
     build_desktop()
     archive_path = create_final_package()
 
     print("\n== Done ==")
-    print(f"Backend exe: {BACKEND_EXE}")
+    for target in BUILD_TARGETS:
+        print(f"{target.label} bundle: {target.bundle_dir}")
+        print(f"{target.label} exe:    {target.exe_path}")
+        print(f"{target.label} staged: {target.desktop_stage_exe}")
     print(f"Desktop dist: {DESKTOP_DIST_DIR}")
     print(f"Final folder: {FINAL_DIR}")
     print(f"Final zip:    {archive_path}")

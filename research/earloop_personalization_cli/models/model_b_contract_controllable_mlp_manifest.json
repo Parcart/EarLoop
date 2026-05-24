@@ -1,0 +1,63 @@
+{
+  "source_checkpoint": "model_b_contract_controllable_mlp.pt",
+  "model_class": "MapperMLP",
+  "feature_names": [
+    "sub_bass",
+    "bass",
+    "lowmid",
+    "warmth",
+    "presence",
+    "clarity",
+    "air",
+    "brightness"
+  ],
+  "freqs": [
+    20.0,
+    50.0,
+    83.0,
+    120.0,
+    159.5102997,
+    200.0437622,
+    254.0482178,
+    308.5627136,
+    383.0,
+    443.8639832,
+    622.0435181,
+    798.0671387,
+    1000.0,
+    1485.982544,
+    1875.0,
+    2368.080811,
+    3389.648193,
+    4365.363281,
+    6934.260742,
+    8568.995117,
+    12000.0,
+    14000.0,
+    16000.0
+  ],
+  "architecture": "MapperMLP 8 -> 128 -> 128 -> 64 -> 23, GELU activations",
+  "activation": "gelu",
+  "runtime": "numpy",
+  "note": "Exported from PyTorch state_dict to NumPy NPZ to keep CLI exe small and avoid bundling torch.",
+  "config": {
+    "batch_size": 64,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "lambda_smooth": 0.0,
+    "lambda_ctrl": 0.003,
+    "lambda_residual": 0.0,
+    "ctrl_sweep_value": 1.0,
+    "num_epochs": 250,
+    "verbose_every": 25,
+    "seed": 42,
+    "use_tqdm": true
+  },
+  "extra": {
+    "normalizer_path": "C:\\Users\\makcc\\PycharmProjects\\EarLoop\\research\\mapper_v2\\outputs\\mapper_v4_feature_scale_normalizer.json",
+    "dataset_path": "C:\\Users\\makcc\\PycharmProjects\\EarLoop\\research\\mapper_v2\\outputs\\mapper_v4_scale_aligned_dataset.parquet",
+    "input_col": "z8_scaled_vector",
+    "target_col": "curve_23",
+    "scale_semantics": "dB-contract"
+  }
+}

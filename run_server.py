@@ -1,4 +1,4 @@
-from earloop.engine.server import run_stdio_server
+from earloop.engine.server import main
 
 if __name__ == "__main__":
-    run_stdio_server()
+    main()

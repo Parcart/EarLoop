@@ -1,0 +1,36 @@
+{
+  "app_name": "EarLoop Personalization CLI",
+  "default_strategy": "phase_aware_feedback",
+  "budget_steps": 24,
+  "sample_rate": 48000,
+  "channels": 2,
+  "blocksize": 1024,
+  "preamp_db": 0.0,
+  "max_abs_db": 12.0,
+  "data_dir": "runtime_data",
+  "audio": {
+    "enabled": true,
+    "capture_device": 2,
+    "playback_device": 6,
+    "auto_detect_devices": false,
+    "latency": "low",
+    "confirm_devices": true,
+    "allowed_host_apis": [
+      "MME"
+    ],
+    "warn_if_vb_cable_missing": true,
+    "expected_system_output": "auto"
+  },
+  "mapper": {
+    "mode": "auto",
+    "model_path": "models/model_b_contract_controllable_mlp.npz",
+    "device": "cpu",
+    "allow_interpretable_fallback": true
+  },
+  "logging": {
+    "save_step_vectors": true,
+    "save_eq_curves": true,
+    "save_model_state_each_step": true,
+    "zip_on_finish": true
+  }
+}
