@@ -68,6 +68,21 @@ export function SessionCompareScreen({
 }: SessionCompareScreenProps) {
   const { emitEvent } = useAppOnboardingContext();
   const currentListeningLabel = listeningTarget === "base" ? "прошлый выбор" : `вариант ${listeningTarget}`;
+  const resolvePairCurve = (pair: PairData) => {
+    if (Array.isArray(pair.eqDb) && pair.eqDb.length > 0) {
+      return { values: pair.eqDb, frequencies: pair.frequencies };
+    }
+    if (Array.isArray(pair.eq_db) && pair.eq_db.length > 0) {
+      return { values: pair.eq_db, frequencies: pair.frequencies };
+    }
+    if (Array.isArray(pair.points) && pair.points.length > 0) {
+      return {
+        values: pair.points.map((point) => point.db),
+        frequencies: pair.points.map((point) => point.freq),
+      };
+    }
+    return { values: curveFromParams(pair.id, pairVersion + 1, sessionBaseParams), frequencies: undefined };
+  };
 
   return (
     <Card className="w-full rounded-[28px] border border-white/10 bg-[#0b0c11] shadow-none">
@@ -109,6 +124,9 @@ export function SessionCompareScreen({
                   { title: "Вариант A", data: pairA, active: listeningTarget === "A", onClick: () => !isGeneratingPair && onSelectListeningTarget("A"), onDoubleClick: () => onCardDoubleClick("A") },
                   { title: "Вариант B", data: pairB, active: listeningTarget === "B", onClick: () => !isGeneratingPair && onSelectListeningTarget("B"), onDoubleClick: () => onCardDoubleClick("B") },
                 ].map((item, index) => (
+                  (() => {
+                    const curve = resolvePairCurve(item.data);
+                    return (
                   <motion.button
                     key={`${item.title}-${pairVersion}`}
                     type="button"
@@ -145,10 +163,12 @@ export function SessionCompareScreen({
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4 pt-1">
-                        <EqChart values={curveFromParams(item.data.id, pairVersion + 1, sessionBaseParams)} accentShift={pairVersion + index} />
+                        <EqChart values={curve.values} frequencies={curve.frequencies} accentShift={pairVersion + index} />
                       </CardContent>
                     </Card>
                   </motion.button>
+                    );
+                  })()
                 ))}
               </motion.div>
             </AnimatePresence>

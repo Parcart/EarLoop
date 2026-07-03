@@ -2,20 +2,37 @@ import { motion } from "framer-motion";
 
 type EqChartProps = {
   values: number[];
+  frequencies?: number[];
   accentShift?: number;
 };
 
-export function EqChart({ values, accentShift = 0 }: EqChartProps) {
-  const maxAbs = 10;
+function formatFrequency(hz: number) {
+  return hz >= 1000 ? `${Number((hz / 1000).toFixed(1)).toString()}k` : `${Math.round(hz)}`;
+}
+
+export function EqChart({ values, frequencies, accentShift = 0 }: EqChartProps) {
+  const maxAbs = Math.max(10, ...values.map((value) => Math.abs(value)));
   const width = 1000;
   const height = 220;
   const paddingX = 24;
   const zeroY = height / 2;
   const innerWidth = width - paddingX * 2;
+  const resolvedFrequencies = frequencies?.length === values.length ? frequencies : undefined;
+  const minFreq = resolvedFrequencies?.[0] ?? 20;
+  const maxFreq = resolvedFrequencies?.[resolvedFrequencies.length - 1] ?? 20000;
+  const logMin = Math.log10(minFreq);
+  const logMax = Math.log10(maxFreq);
+  const xFor = (idx: number) => {
+    if (!resolvedFrequencies || resolvedFrequencies.length < 2) {
+      return paddingX + (idx / Math.max(1, values.length - 1)) * innerWidth;
+    }
+    const freq = Math.max(minFreq, Math.min(maxFreq, resolvedFrequencies[idx]));
+    return paddingX + ((Math.log10(freq) - logMin) / (logMax - logMin)) * innerWidth;
+  };
 
   const points = values
     .map((v, idx) => {
-      const x = paddingX + (idx / (values.length - 1)) * innerWidth;
+      const x = xFor(idx);
       const y = zeroY - (v / maxAbs) * (height * 0.34);
       return `${x},${y}`;
     })
@@ -59,9 +76,12 @@ export function EqChart({ values, accentShift = 0 }: EqChartProps) {
         </svg>
       </div>
       <div className="mt-3 grid grid-cols-12 gap-2 px-1 text-[10px] text-white/45">
-        {[25, 40, 63, 100, 160, 250, 400, 630, 1000, 2500, 6300, 16000].map((hz) => (
+        {(resolvedFrequencies ?? [25, 40, 63, 100, 160, 250, 400, 630, 1000, 2500, 6300, 16000])
+          .filter((_, index, arr) => arr.length <= 12 || index % Math.ceil(arr.length / 12) === 0)
+          .slice(0, 12)
+          .map((hz) => (
           <span key={hz} className="truncate text-center">
-            {hz >= 1000 ? `${hz / 1000}k` : hz}
+            {formatFrequency(hz)}
           </span>
         ))}
       </div>

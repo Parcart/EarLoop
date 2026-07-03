@@ -18,6 +18,13 @@ export type PairData = {
   id: PairKey;
   params: PerceptualParams;
   score: number;
+  frequencies?: number[];
+  eqDb?: number[];
+  eq_db?: number[];
+  points?: Array<{ freq: number; db: number }>;
+  zContract?: number[];
+  z_contract?: number[];
+  debug?: Record<string, unknown>;
 };
 
 export type PipelineConfig = {

@@ -132,12 +132,27 @@ class PairData:
     pair_id: PairKey
     params: PerceptualParams
     score: float
+    frequencies: list[float] = field(default_factory=list)
+    eq_db: list[float] = field(default_factory=list)
+    z_contract: list[float] = field(default_factory=list)
+    debug: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        points = [
+            {"freq": float(freq), "db": float(db)}
+            for freq, db in zip(self.frequencies, self.eq_db)
+        ]
         return {
             "id": self.pair_id,
             "params": self.params.to_dict(),
             "score": self.score,
+            "frequencies": [float(freq) for freq in self.frequencies],
+            "eqDb": [float(db) for db in self.eq_db],
+            "eq_db": [float(db) for db in self.eq_db],
+            "points": points,
+            "zContract": [float(x) for x in self.z_contract],
+            "z_contract": [float(x) for x in self.z_contract],
+            "debug": dict(self.debug),
         }
 
 
@@ -350,6 +365,7 @@ class SessionState:
     last_generation_mode: str = "heuristic"
     last_fallback_reason: str | None = None
     event_log_tail: list[dict[str, Any]] = field(default_factory=list)
+    debug: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -369,6 +385,11 @@ class SessionState:
             "currentPairA": self.current_pair_a.to_dict() if self.current_pair_a is not None else None,
             "currentPairB": self.current_pair_b.to_dict() if self.current_pair_b is not None else None,
             "history": [dict(entry) for entry in self.history],
+            "modelState": dict(self.model_state),
+            "lastGenerationMode": self.last_generation_mode,
+            "lastFallbackReason": self.last_fallback_reason,
+            "eventLogTail": [dict(entry) for entry in self.event_log_tail],
+            "debug": dict(self.debug),
         }
 
 
@@ -401,6 +422,15 @@ class SessionSnapshot:
     pair_b: PairData
     last_feedback: str = "none"
     last_selected_target: ListeningTarget = "base"
+    soft_stop_triggered: bool = False
+    ready_marker_set: bool = False
+    ready_step: int | None = None
+    feedback_count: int = 0
+    steps_count: int = 0
+    mapper_version: str | None = None
+    strategy: str | None = None
+    pair_source: str | None = None
+    debug: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -417,6 +447,16 @@ class SessionSnapshot:
             "lastSelectedTarget": self.last_selected_target,
             "pairA": self.pair_a.to_dict(),
             "pairB": self.pair_b.to_dict(),
+            "softStop": self.soft_stop_triggered,
+            "softStopTriggered": self.soft_stop_triggered,
+            "readyMarkerSet": self.ready_marker_set,
+            "readyStep": self.ready_step,
+            "feedbackCount": self.feedback_count,
+            "stepsCount": self.steps_count,
+            "mapperVersion": self.mapper_version,
+            "strategy": self.strategy,
+            "pairSource": self.pair_source,
+            "debug": dict(self.debug),
         }
 
 

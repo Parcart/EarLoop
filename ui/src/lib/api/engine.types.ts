@@ -111,6 +111,16 @@ export type SessionSnapshot = {
   lastSelectedTarget: ListeningTarget;
   pairA: PairData;
   pairB: PairData;
+  softStop?: boolean;
+  softStopTriggered?: boolean;
+  readyMarkerSet?: boolean;
+  readyStep?: number | null;
+  feedbackCount?: number;
+  stepsCount?: number;
+  mapperVersion?: string | null;
+  strategy?: string | null;
+  pairSource?: string | null;
+  debug?: Record<string, unknown>;
 };
 
 export type UpdateProfileInput = {

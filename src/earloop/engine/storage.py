@@ -23,6 +23,7 @@ from .persistence import (
     load_persisted_domain_state,
     save_persisted_domain_state,
 )
+from .personalization_runtime import DesktopPersonalizationRuntime
 from .types import (
     DomainState,
     EngineAudioConfig,
@@ -44,35 +45,26 @@ INITIAL_ITERATION = 12
 INITIAL_PROGRESS = 62
 PIPELINE_CATALOG = {
     "models": [
-        {"id": "preference-linear-v1", "label": "Preference Linear v1"},
-        {"id": "preference-hybrid-v2", "label": "Preference Hybrid v2"},
-        {"id": "listener-embedding-v1", "label": "Listener Embedding v1"},
+        {"id": "logistic-distance-preference-v6", "label": "Logistic Distance Preference v6"},
     ],
     "eqs": [
-        {"id": "parametric-eq-v1", "label": "Parametric EQ v1"},
-        {"id": "minimum-phase-eq-v2", "label": "Minimum Phase EQ v2"},
-        {"id": "wideband-eq-v1", "label": "Wideband EQ v1"},
+        {"id": "23-band-eq-v6", "label": "23-band EQ"},
     ],
     "mappers": [
-        {"id": "perceptual-mapper-v1", "label": "Perceptual Mapper v1"},
-        {"id": "smooth-curve-mapper-v2", "label": "Smooth Curve Mapper v2"},
-        {"id": "target-blend-mapper-v1", "label": "Target Blend Mapper v1"},
+        {"id": "numpy-model-b-contract-controllable-mlp", "label": "Contract 8D -> 23-band mapper"},
     ],
     "generators": [
-        {"id": "candidate-pool-v1", "label": "Candidate Pool v1"},
-        {"id": "local-search-v2", "label": "Local Search v2"},
-        {"id": "guided-random-v1", "label": "Guided Random v1"},
+        {"id": "contract-pair-generator-v6", "label": "Contract Pair Generator v6"},
     ],
     "strategies": [
-        {"id": "adaptive-updater-v1", "label": "Adaptive Updater v1"},
-        {"id": "confidence-weighted-v2", "label": "Confidence Weighted v2"},
-        {"id": "fast-explore-v1", "label": "Fast Explore v1"},
+        {"id": "phase_aware_feedback", "label": "Phase-aware feedback"},
     ],
 }
 STARTUP_STEPS = [
     "Инициализация аудиомоста",
-    "Подключение модели персонализации",
-    "Генерация первых вариантов",
+    "Загрузка mapper-модели",
+    "Запуск real personalization runtime",
+    "Генерация A/B-пары",
 ]
 PERCEPTUAL_DIM = 6
 MODEL_VERSION = "linear_preference_v1"
@@ -103,11 +95,11 @@ def _default_audio_config() -> EngineAudioConfig:
 
 def _default_pipeline_config() -> PipelineConfig:
     return PipelineConfig(
-        model_id="preference-linear-v1",
-        eq_id="parametric-eq-v1",
-        mapper_id="perceptual-mapper-v1",
-        generator_id="candidate-pool-v1",
-        strategy_id="adaptive-updater-v1",
+        model_id="logistic-distance-preference-v6",
+        eq_id="23-band-eq-v6",
+        mapper_id="numpy-model-b-contract-controllable-mlp",
+        generator_id="contract-pair-generator-v6",
+        strategy_id="phase_aware_feedback",
     )
 
 
@@ -332,6 +324,7 @@ def _contains_mock_audio_devices(config: EngineAudioConfig) -> bool:
 class InMemoryEngineStorage:
     def __init__(self) -> None:
         self._logger = setup_logger("earloop.engine-storage")
+        self._personalization_runtime = DesktopPersonalizationRuntime()
         self._app_build_version = str(EARLOOP_VERSION)
         self._user_identity = load_or_create_user_identity()
         if not self._user_identity.get("appBuildVersion"):
@@ -392,17 +385,19 @@ class InMemoryEngineStorage:
         )
 
     def get_engine_status(self) -> EngineStatus:
+        mapper_status = self._personalization_runtime.mapper_status()
+        pipeline_catalog = self._personalization_runtime.pipeline_catalog()
         return EngineStatus(
             default_profile_name=DEFAULT_PROFILE_NAME,
             default_profile_params=_default_profile_params(),
-            default_pipeline_config=_default_pipeline_config(),
-            initial_iteration=INITIAL_ITERATION,
-            initial_progress=INITIAL_PROGRESS,
-            pipeline_catalog={key: [dict(option) for option in value] for key, value in PIPELINE_CATALOG.items()},
+            default_pipeline_config=self._personalization_runtime.default_pipeline_config(),
+            initial_iteration=0,
+            initial_progress=0,
+            pipeline_catalog={key: [dict(option) for option in value] for key, value in pipeline_catalog.items()},
             session_default_profile_id=SESSION_DEFAULT_PROFILE_ID,
-            startup_steps=list(STARTUP_STEPS),
+            startup_steps=self._personalization_runtime.startup_steps(),
             backend_mode="real",
-            log_paths=describe_runtime_paths(),
+            log_paths={**describe_runtime_paths(), "mapperModelPath": str(mapper_status["modelPath"])},
         )
 
     def get_engine_config(self) -> EngineConfig:
@@ -432,6 +427,10 @@ class InMemoryEngineStorage:
                     pair_id=self._state.session.current_pair_a.pair_id,
                     params=_clone_params(self._state.session.current_pair_a.params),
                     score=self._state.session.current_pair_a.score,
+                    frequencies=list(self._state.session.current_pair_a.frequencies),
+                    eq_db=list(self._state.session.current_pair_a.eq_db),
+                    z_contract=list(self._state.session.current_pair_a.z_contract),
+                    debug=dict(self._state.session.current_pair_a.debug),
                 )
             ),
             current_pair_b=(
@@ -440,11 +439,16 @@ class InMemoryEngineStorage:
                     pair_id=self._state.session.current_pair_b.pair_id,
                     params=_clone_params(self._state.session.current_pair_b.params),
                     score=self._state.session.current_pair_b.score,
+                    frequencies=list(self._state.session.current_pair_b.frequencies),
+                    eq_db=list(self._state.session.current_pair_b.eq_db),
+                    z_contract=list(self._state.session.current_pair_b.z_contract),
+                    debug=dict(self._state.session.current_pair_b.debug),
                 )
             ),
             history=[dict(entry) for entry in self._state.session.history],
             model_state=dict(self._state.session.model_state),
             event_log_tail=[dict(entry) for entry in self._state.session.event_log_tail],
+            debug=dict(self._state.session.debug),
         )
         return DomainState(
             profiles=self.get_profiles(),
@@ -587,38 +591,31 @@ class InMemoryEngineStorage:
         name: str,
         final_choice: str,
     ) -> dict[str, Any]:
-        current_session = self._state.session
-        if current_session is None:
-            raise RuntimeError("No active session to save from")
-
-        if final_choice == "A" and current_session.current_pair_a is not None:
-            chosen_params = _clone_params(current_session.current_pair_a.params)
-        elif final_choice == "B" and current_session.current_pair_b is not None:
-            chosen_params = _clone_params(current_session.current_pair_b.params)
-        else:
-            chosen_params = _clone_params(current_session.current_base_params)
-
-        slug = _slugify_profile_name(name)
-        profile_id = slug
-        suffix = 1
+        result = self._personalization_runtime.save_profile_from_session(
+            name=name,
+            final_choice=final_choice,
+        )
+        saved_payload = dict(result["savedProfile"])
+        profile_id = str(saved_payload["id"])
         existing_ids = {profile.profile_id for profile in self._state.profiles}
         while profile_id in existing_ids:
-            suffix += 1
-            profile_id = f"{slug}-{suffix}"
+            profile_id = f"{saved_payload['id']}-{uuid4().hex[:4]}"
 
         saved_profile = SavedProfile(
             profile_id=profile_id,
-            name=name,
-            params=chosen_params,
-            pipeline_config=_clone_pipeline_config(current_session.pipeline_config),
+            name=str(saved_payload["name"]),
+            params=PerceptualParams.from_dict(saved_payload["params"]),
+            pipeline_config=PipelineConfig.from_dict(saved_payload["pipelineConfig"]),
         )
         self._state.profiles.append(saved_profile)
         self._state.config.active_profile_id = profile_id
         self._persist_domain_state()
+        saved_payload["id"] = profile_id
         return {
             "profileId": profile_id,
             "profiles": [profile.to_dict() for profile in self.get_profiles()],
-            "savedProfile": saved_profile.to_dict(),
+            "savedProfile": saved_payload,
+            "profilePath": result.get("profilePath"),
         }
 
     def _resolve_session_components(self, payload: dict[str, Any]) -> tuple[SavedProfile | None, PipelineConfig, PerceptualParams, str, int, int, int]:
@@ -777,182 +774,81 @@ class InMemoryEngineStorage:
             )
         return event
 
-    def create_session(self, payload: dict[str, Any]) -> SessionSnapshot:
-        session_id = str(uuid4())
-        session_base_profile_id = str(payload["sessionBaseProfileId"])
-        session_base_profile, pipeline_config, session_base_params, session_base_label, iteration, progress, pair_version = self._resolve_session_components(payload)
-        selected_target = str(payload.get("selectedTarget", "base"))
-        feedback = str(payload.get("feedback", "none"))
-        snapshot = self._build_session_snapshot(
-            session_id=session_id,
-            status="created",
-            session_base_profile=session_base_profile,
-            pipeline_config=pipeline_config,
-            session_base_params=session_base_params,
-            session_base_label=session_base_label,
-            iteration=iteration,
-            progress=progress,
-            pair_version=pair_version,
-            last_feedback=feedback,
-            last_selected_target=selected_target,
-        )
+    def _sync_session_from_snapshot(self, snapshot: SessionSnapshot, *, session_base_profile_id: str, history: list[dict[str, Any]] | None = None) -> None:
         self._state.session = SessionState(
-            session_id=session_id,
-            status="created",
+            session_id=snapshot.session_id,
+            status=snapshot.status,
             session_base_profile_id=session_base_profile_id,
-            session_base_params=_clone_params(session_base_params),
-            session_base_label=session_base_label,
-            current_base_params=_clone_params(session_base_params),
-            current_base_label=session_base_label,
-            pipeline_config=_clone_pipeline_config(pipeline_config),
-            iteration=iteration,
-            progress=progress,
-            pair_version=pair_version,
-            last_feedback=feedback,
-            last_selected_target=selected_target,
-            current_pair_a=PairData(pair_id=snapshot.pair_a.pair_id, params=_clone_params(snapshot.pair_a.params), score=snapshot.pair_a.score),
-            current_pair_b=PairData(pair_id=snapshot.pair_b.pair_id, params=_clone_params(snapshot.pair_b.params), score=snapshot.pair_b.score),
-            history=[],
-            model_state=_model_state_from_session(None),
-            last_generation_mode="heuristic",
+            session_base_params=_clone_params(snapshot.session_base_params),
+            session_base_label=snapshot.session_base_label,
+            current_base_params=_clone_params(snapshot.session_base_params),
+            current_base_label=snapshot.session_base_label,
+            pipeline_config=_clone_pipeline_config(snapshot.session_pipeline_config),
+            iteration=snapshot.iteration,
+            progress=snapshot.progress,
+            pair_version=snapshot.pair_version,
+            last_feedback=snapshot.last_feedback,
+            last_selected_target=snapshot.last_selected_target,
+            current_pair_a=PairData(
+                pair_id=snapshot.pair_a.pair_id,
+                params=_clone_params(snapshot.pair_a.params),
+                score=snapshot.pair_a.score,
+                frequencies=list(snapshot.pair_a.frequencies),
+                eq_db=list(snapshot.pair_a.eq_db),
+                z_contract=list(snapshot.pair_a.z_contract),
+                debug=dict(snapshot.pair_a.debug),
+            ),
+            current_pair_b=PairData(
+                pair_id=snapshot.pair_b.pair_id,
+                params=_clone_params(snapshot.pair_b.params),
+                score=snapshot.pair_b.score,
+                frequencies=list(snapshot.pair_b.frequencies),
+                eq_db=list(snapshot.pair_b.eq_db),
+                z_contract=list(snapshot.pair_b.z_contract),
+                debug=dict(snapshot.pair_b.debug),
+            ),
+            history=[] if history is None else [dict(entry) for entry in history],
+            model_state=dict(snapshot.debug),
+            last_generation_mode=str(snapshot.pair_source or "contract_runtime"),
             last_fallback_reason=None,
             event_log_tail=[],
+            debug={
+                "softStop": snapshot.soft_stop_triggered,
+                "readyMarkerSet": snapshot.ready_marker_set,
+                "readyStep": snapshot.ready_step,
+                "feedbackCount": snapshot.feedback_count,
+                "stepsCount": snapshot.steps_count,
+                "mapperVersion": snapshot.mapper_version,
+                "strategy": snapshot.strategy,
+                "pairSource": snapshot.pair_source,
+                **dict(snapshot.debug),
+            },
         )
+
+    def create_session(self, payload: dict[str, Any]) -> SessionSnapshot:
+        payload = {**payload, "profiles": [profile.to_dict() for profile in self.get_profiles()]}
+        snapshot = self._personalization_runtime.create_session(payload)
+        self._sync_session_from_snapshot(snapshot, session_base_profile_id=str(payload["sessionBaseProfileId"]))
         return snapshot
 
     def start_session(self, payload: dict[str, Any]) -> SessionSnapshot:
-        snapshot = self.create_session(payload)
-        if self._state.session is not None:
-            self._state.session.status = "started"
-            snapshot.status = "started"
+        payload = {**payload, "profiles": [profile.to_dict() for profile in self.get_profiles()]}
+        snapshot = self._personalization_runtime.start_session(payload)
+        self._sync_session_from_snapshot(snapshot, session_base_profile_id=str(payload["sessionBaseProfileId"]))
         return snapshot
 
     def generate_next_pair(self, payload: dict[str, Any]) -> SessionSnapshot:
-        session_base_profile_id = str(payload["sessionBaseProfileId"])
-        selected_target = str(payload.get("selectedTarget", "base"))
-        feedback = str(payload.get("feedback", "none"))
-        session_base_profile, pipeline_config, payload_base_params, payload_base_label, iteration, progress, pair_version = self._resolve_session_components(payload)
-        current_session = self._state.session
-        base_params = (
-            _clone_params(current_session.current_base_params)
-            if current_session is not None
-            else payload_base_params
-        )
-        base_label = current_session.current_base_label if current_session is not None else payload_base_label
-        pair_a = current_session.current_pair_a if current_session is not None else None
-        pair_b = current_session.current_pair_b if current_session is not None else None
-
-        base_params_before = _clone_params(base_params)
-        if selected_target == "A" and pair_a is not None:
-            next_base_params = _blend_params(base_params, pair_a.params, 0.72)
-            next_base_label = "вариант A"
-        elif selected_target == "B" and pair_b is not None:
-            next_base_params = _blend_params(base_params, pair_b.params, 0.72)
-            next_base_label = "вариант B"
-        else:
-            next_base_params = _clone_params(base_params)
-            next_base_label = base_label
-
-        if selected_target == "base" and feedback != "none":
-            next_base_params = _apply_feedback(next_base_params, feedback)
-        iteration += 1
-        progress = min(100, progress + 5)
-        pair_version += 1
-        model = self._init_preference_model(current_session)
-        model_updated = self._update_model_from_last_choice(
-            model=model,
-            selected_target=selected_target,
-            pair_a=pair_a,
-            pair_b=pair_b,
-        )
-        generation_mode = "ml_scored"
-        fallback_reason: str | None = None
-        try:
-            next_pair_a, next_pair_b = self._build_ml_pair(
-                model=model,
-                next_base_params=next_base_params,
-                pair_version=pair_version,
-            )
-        except Exception as exc:
-            generation_mode = "heuristic_fallback"
-            fallback_reason = str(exc)
-            self._logger.warning(
-                "ml pair generation fallback: session_id=%s iteration=%s pair_version=%s error=%s",
-                current_session.session_id if current_session is not None else "new-session",
-                iteration,
-                pair_version,
-                exc,
-            )
-            next_pair_a = _build_pair(pair_version + 1, "A", next_base_params)
-            next_pair_b = _build_pair(pair_version + 1, "B", next_base_params)
-
-        snapshot = SessionSnapshot(
-            session_id=current_session.session_id if current_session is not None else str(uuid4()),
-            status="started",
-            session_base_profile=_clone_profile(session_base_profile) if session_base_profile is not None else None,
-            session_base_params=_clone_params(next_base_params),
-            session_base_label=next_base_label,
-            session_pipeline_config=_clone_pipeline_config(pipeline_config),
-            iteration=iteration,
-            progress=progress,
-            pair_version=pair_version,
-            last_feedback=feedback,
-            last_selected_target=selected_target,
-            pair_a=next_pair_a,
-            pair_b=next_pair_b,
-        )
-        history = [*current_session.history] if current_session is not None else []
+        payload = {**payload, "profiles": [profile.to_dict() for profile in self.get_profiles()]}
+        snapshot = self._personalization_runtime.generate_next_pair(payload)
+        history = [*(self._state.session.history if self._state.session is not None else [])]
         history.append({
-            "iteration": iteration,
-            "selectedTarget": selected_target,
-            "feedback": feedback,
-            "baseLabel": next_base_label,
-            "generationMode": generation_mode,
-            "fallbackReason": fallback_reason,
+            "iteration": snapshot.iteration,
+            "selectedTarget": snapshot.last_selected_target,
+            "feedback": snapshot.last_feedback,
+            "baseLabel": snapshot.session_base_label,
+            "generationMode": snapshot.pair_source,
+            "readyMarkerSet": snapshot.ready_marker_set,
+            "readyStep": snapshot.ready_step,
         })
-        history = history[-24:]
-        event_type = _resolve_event_type(selected_target=selected_target, feedback=feedback)
-        event_log_tail = [*(current_session.event_log_tail if current_session is not None else [])]
-        if event_type is not None:
-            event = self._append_event_log(
-                event_type=event_type,
-                session_id=current_session.session_id if current_session is not None else snapshot.session_id,
-                pipeline_config=pipeline_config,
-                iteration=iteration,
-                pair_version=pair_version,
-                base_params_before=base_params_before,
-                pair_a_before=pair_a,
-                pair_b_before=pair_b,
-                selected_target=selected_target,
-                feedback=feedback,
-                base_params_after=next_base_params,
-                generation_mode=generation_mode,
-                fallback_reason=fallback_reason,
-            )
-            event_log_tail.append(event)
-        next_model_state = _serialize_model_state(model) if model_updated else _model_state_from_session(current_session)
-        event_log_tail = event_log_tail[-EVENT_LOG_TAIL_LIMIT:]
-        session_id = current_session.session_id if current_session is not None else snapshot.session_id
-        self._state.session = SessionState(
-            session_id=session_id,
-            status="started",
-            session_base_profile_id=session_base_profile_id,
-            session_base_params=_clone_params(next_base_params),
-            session_base_label=next_base_label,
-            current_base_params=_clone_params(next_base_params),
-            current_base_label=next_base_label,
-            pipeline_config=_clone_pipeline_config(pipeline_config),
-            iteration=iteration,
-            progress=progress,
-            pair_version=pair_version,
-            last_feedback=feedback,
-            last_selected_target=selected_target,
-            current_pair_a=PairData(pair_id=snapshot.pair_a.pair_id, params=_clone_params(snapshot.pair_a.params), score=snapshot.pair_a.score),
-            current_pair_b=PairData(pair_id=snapshot.pair_b.pair_id, params=_clone_params(snapshot.pair_b.params), score=snapshot.pair_b.score),
-            history=history,
-            model_state=next_model_state,
-            last_generation_mode=generation_mode,
-            last_fallback_reason=fallback_reason,
-            event_log_tail=event_log_tail,
-        )
+        self._sync_session_from_snapshot(snapshot, session_base_profile_id=str(payload["sessionBaseProfileId"]), history=history[-128:])
         return snapshot

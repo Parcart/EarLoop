@@ -396,26 +396,48 @@ def build_worker_target(target: BuildTarget) -> None:
     install_packaging_requirements(target, build_python)
     run_dependency_sanity_check(target, build_python)
 
-    run(
-        [
-            str(build_python),
-            "-m",
-            "PyInstaller",
-            str(target.entrypoint),
-            "--noconfirm",
-            "--distpath",
-            str(BACKEND_DIST_DIR),
-            "--workpath",
-            str(target.pyinstaller_work_dir),
-            "--specpath",
-            str(target.pyinstaller_work_dir),
+    pyinstaller_cmd = [
+        str(build_python),
+        "-m",
+        "PyInstaller",
+        str(target.entrypoint),
+        "--noconfirm",
+        "--distpath",
+        str(BACKEND_DIST_DIR),
+        "--workpath",
+        str(target.pyinstaller_work_dir),
+        "--specpath",
+        str(target.pyinstaller_work_dir),
+        "--paths",
+        str(ROOT / "src"),
+        "--name",
+        target.dist_name,
+    ]
+    if target is ML_TARGET:
+        pyinstaller_cmd.extend([
             "--paths",
-            str(ROOT / "src"),
-            "--name",
-            target.dist_name,
-        ],
-        cwd=ROOT,
-    )
+            str(ROOT / "research" / "earloop_personalization_cli"),
+            "--paths",
+            str(ROOT / "research" / "earloop_personalization_cli" / "vendor"),
+            "--add-data",
+            f"{ROOT / 'src' / 'earloop' / 'resources' / 'models'}{os.pathsep}earloop/resources/models",
+            "--hidden-import",
+            "earloop_cli.mapper_runtime",
+            "--hidden-import",
+            "earloop_cli.profile_manager",
+            "--hidden-import",
+            "earloop_cli.strategy",
+            "--hidden-import",
+            "personalization.contract_pair_generator",
+            "--hidden-import",
+            "personalization.contract_feedback",
+            "--hidden-import",
+            "personalization.preference_model",
+            "--hidden-import",
+            "personalization.preference_update",
+        ])
+
+    run(pyinstaller_cmd, cwd=ROOT)
 
     if not target.bundle_dir.is_dir():
         raise FileNotFoundError(f"Не найдена bundle directory для {target.label}: {target.bundle_dir}")
